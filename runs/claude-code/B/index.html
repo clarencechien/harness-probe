@@ -205,7 +205,7 @@ const matGold = new THREE.MeshStandardMaterial({ color: 0xc9a24a, roughness: 0.4
 const matIron = new THREE.MeshStandardMaterial({ color: 0x3b3f47, roughness: 0.5, metalness: 0.8 });
 const matWood = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.8 });
 const matLeather = new THREE.MeshStandardMaterial({ color: 0x2a1e18, roughness: 0.9 });
-const matGlass = new THREE.MeshPhysicalMaterial({ color: 0xbfd8ee, roughness: 0.08, metalness: 0, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide });
+const matGlass = new THREE.MeshPhysicalMaterial({ color: 0xa8c2dc, roughness: 0.3, metalness: 0, transparent: true, opacity: 0.2, depthWrite: false, side: THREE.DoubleSide });
 const matFlame = new THREE.MeshBasicMaterial({ color: 0xffc46a });
 const matLampGlass = new THREE.MeshPhysicalMaterial({ color: 0xffe0b0, roughness: 0.1, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
 
@@ -369,7 +369,7 @@ for (const s of [-1, 1]) for (const x of [REAR_X + 0.15, FRONT_X - 0.1]) {
 
 // ---------- suspension (sprung body on four corner springs) ----------
 const susp = { y: 0, vy: 0, pitch: 0, vp: 0, roll: 0, vr: 0 };
-const K = 38, C = 3.2, M = 1.0, I_P = 0.55, I_R = 0.32;
+const K = 26, C = 2.0, M = 1.0, I_P = 0.55, I_R = 0.32;
 const CORNERS = [
   { x: REAR_X + 0.15, z: -TRACK * 0.9, w: 0 }, { x: REAR_X + 0.15, z: TRACK * 0.9, w: 1 },
   { x: FRONT_X - 0.1, z: -TRACK * 0.9, w: 2 }, { x: FRONT_X - 0.1, z: TRACK * 0.9, w: 3 },
