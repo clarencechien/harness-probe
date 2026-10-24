@@ -1,0 +1,22 @@
+{
+  "surface": "claude-code",
+  "model": "claude-fable-5-1 (session-configured; serving model may differ)",
+  "task": "A",
+  "date": "2026-10-24",
+  "turns": 0,
+  "agent_iterations": 6,
+  "tokens_in": 51000,
+  "tokens_out": 14000,
+  "tokens_note": "Estimated: /cost not available in this harness. Session budget counter fell by ~65k during Task A (10:32–10:51); output share estimated from characters written (index.html 23 KB + edit scripts + probe scripts ≈ 49k chars ÷ 3.5). Treat as ±30%.",
+  "wall_minutes": 18,
+  "file_lines": 581,
+  "file_kb": 23.2,
+  "runs_without_console_error": true,
+  "console_error_count": 0,
+  "checklist_pass": "6/6 (self-judged; human column blank)",
+  "subjective_1to5": null,
+  "failure_mode": "none terminal; iterations were all visual (blocky reflections, invisible wake/shadow, Sky addon too pale → replaced with own sky shader)",
+  "screenshots": ["t0.png", "t3s.png", "t8s.png"],
+  "started_utc": "2026-10-24T10:32:51Z",
+  "ended_utc": "2026-10-24T10:50:40Z"
+}

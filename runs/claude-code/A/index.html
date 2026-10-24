@@ -85,8 +85,8 @@ const sky = new THREE.Mesh(
         col = mix(col, zenith, smoothstep(0.08, 0.6, h));
         float sd = max(dot(d, sunDir), 0.0);
         // wide warm haze around the sun, stronger near the horizon
-        col += vec3(1.0, 0.55, 0.22) * pow(sd, 6.0) * 0.45 * (1.0 - smoothstep(0.0, 0.5, h));
-        col += vec3(1.0, 0.75, 0.45) * pow(sd, 90.0) * 0.9;
+        col += vec3(1.0, 0.55, 0.22) * pow(sd, 8.0) * 0.35 * (1.0 - smoothstep(0.0, 0.5, h));
+        col += vec3(1.0, 0.75, 0.45) * pow(sd, 400.0) * 0.8;
         col += vec3(1.0, 0.92, 0.75) * smoothstep(0.9992, 0.9996, sd) * 1.4;   // sun disk
         col = mix(vec3(0.05, 0.08, 0.12), col, smoothstep(-0.2, 0.0, d.y));    // below the horizon
         gl_FragColor = vec4(col, 1.0);
@@ -117,8 +117,12 @@ sunLight.shadow.normalBias = 0.05;
 scene.add(sunLight);
 scene.add(sunLight.target);
 
-const hemi = new THREE.HemisphereLight(0xff9a55, 0x18283a, 0.6);
+const hemi = new THREE.HemisphereLight(0xffb070, 0x1a2a3c, 0.9);
 scene.add(hemi);
+// soft fill from the camera side so the backlit plane keeps its colour
+const fill = new THREE.DirectionalLight(0xffd6a0, 0.9);
+fill.position.set(-1, 0.6, 0.4);
+scene.add(fill);
 
 // ---------- procedural water normal map ----------
 function makeWaterNormals(size = 256) {
