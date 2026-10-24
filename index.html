@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>harness-probe results</title>
+<style>
+  :root { --bg:#f6f4ef; --fg:#1d1d1b; --mut:#6b675f; --acc:#b4532a; --card:#fff; --line:#e3dfd6; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#17181b; --fg:#ecebe6; --mut:#9a978f; --acc:#f0a070; --card:#1f2126; --line:#2f3238; } }
+  body { margin:0; padding:24px 16px 48px; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; max-width:1100px; margin-inline:auto; }
+  h1 { font-size:24px; margin:0 0 4px; } h2 { font-size:18px; margin:32px 0 8px; }
+  p.sub { color:var(--mut); margin:0 0 20px; }
+  .runs { display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .card img { display:block; width:100%; aspect-ratio:16/9; object-fit:cover; background:#000; }
+  .card .b { padding:10px 12px; } .card a.open { color:var(--acc); font-weight:600; text-decoration:none; }
+  .card small { color:var(--mut); display:block; }
+  table { border-collapse:collapse; width:100%; font-size:13px; background:var(--card); border:1px solid var(--line); border-radius:8px; }
+  th, td { padding:6px 8px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+  th { color:var(--mut); font-weight:600; white-space:nowrap; }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  td.blank { color:var(--mut); font-style:italic; }
+  .wrap { overflow-x:auto; }
+  .note { color:var(--mut); font-size:13px; }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<h1>harness-probe</h1>
+<p class="sub">Three single-file Three.js tasks, one protocol, several surfaces. Claude Code column below; other surfaces are added to <code>runs/&lt;surface&gt;/&lt;task&gt;/</code>. Protocol: <a href="HANDOFF-harness-probe.md">HANDOFF</a> · <a href="RESULTS.md">RESULTS.md</a> · <a href="runs/claude-code/FAILURE-MODES.md">FAILURE-MODES.md</a></p>
+
+<h2>Claude Code runs (open in a real browser; the judge screenshots below are headless at ~5 fps)</h2>
+<div class="runs">
+  <div class="card"><a href="runs/claude-code/A/index.html"><img src="runs/claude-code/A/t8s.png" alt="Task A judge screenshot at 8 s"></a><div class="b"><a class="open" href="runs/claude-code/A/index.html">Task A · seaplane, golden hour →</a><small>Water addon + own sky shader · Space pauses · <a href="runs/claude-code/A/iterations.md">iterations</a></small></div></div>
+  <div class="card"><a href="runs/claude-code/B/index.html"><img src="runs/claude-code/B/t8s.png" alt="Task B judge screenshot at 8 s"></a><div class="b"><a class="open" href="runs/claude-code/B/index.html">Task B · brougham from a reference image →</a><small>click doors · R resets · <a href="inputs/carriage.jpg">reference</a> · <a href="runs/claude-code/B/iterations.md">iterations</a></small></div></div>
+  <div class="card"><a href="runs/claude-code/C/index.html"><img src="runs/claude-code/C/t8s.png" alt="Task C judge screenshot at 8 s"></a><div class="b"><a class="open" href="runs/claude-code/C/index.html">Task C · marble run, hand-written physics →</a><small>button releases · R clears · <a href="runs/claude-code/C/iterations.md">iterations</a></small></div></div>
+</div>
+
+<h2>RESULTS.csv</h2>
+<p class="note">Rendered live from <a href="RESULTS.csv">RESULTS.csv</a> (written by <code>tools/sweep.sh</code>). Blank cells are human-judged columns, or surfaces not yet run. Token figures for Claude Code are estimates (±30%).</p>
+<div class="wrap"><table id="t"><thead></thead><tbody><tr><td>Loading…</td></tr></tbody></table></div>
+<p id="summary" class="note"></p>
+
+<script>
+function parseCSV(text) {
+  const rows = []; let row = [], field = '', q = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (q) { if (c === '"') { if (text[i + 1] === '"') { field += '"'; i++; } else q = false; } else field += c; }
+    else if (c === '"') q = true;
+    else if (c === ',') { row.push(field); field = ''; }
+    else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+    else if (c !== '\r') field += c;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  return rows.filter(r => r.length > 1);
+}
+const NUM = new Set(['turns','agent_iterations','tokens_in','tokens_out','wall_minutes','file_lines','file_kb','console_error_count','subjective_1to5']);
+fetch('RESULTS.csv', { cache: 'no-store' }).then(r => r.text()).then(text => {
+  const rows = parseCSV(text); const head = rows.shift();
+  const t = document.getElementById('t');
+  t.querySelector('thead').innerHTML = '<tr>' + head.map(h => `<th>${h}</th>`).join('') + '</tr>';
+  t.querySelector('tbody').innerHTML = rows.map(r => '<tr>' + r.map((v, i) => {
+    const h = head[i]; const blank = v === '';
+    return `<td class="${NUM.has(h) ? 'num' : ''} ${blank ? 'blank' : ''}">${blank ? '—' : v.replace(/</g, '&lt;')}</td>`;
+  }).join('') + '</tr>').join('');
+  const idx = n => head.indexOf(n);
+  const cc = rows.filter(r => r[idx('surface')] === 'claude-code');
+  const sum = n => cc.reduce((a, r) => a + (+r[idx(n)] || 0), 0);
+  const filled = cc.map(r => head.filter((h, i) => r[i] !== '').length + '/' + head.length);
+  document.getElementById('summary').textContent =
+    `Claude Code rows: ${cc.length} · iterations ${sum('agent_iterations')} · wall ${sum('wall_minutes')} min · tokens in ≈ ${sum('tokens_in').toLocaleString()} / out ≈ ${sum('tokens_out').toLocaleString()} · console errors ${sum('console_error_count')} · filled cells per row: ${filled.join(', ')} (the two blanks per row are the human columns).`;
+}).catch(e => { document.getElementById('t').querySelector('tbody').innerHTML = `<tr><td>Could not load RESULTS.csv: ${e}</td></tr>`; });
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+{
+  "surface": "claude-code",
+  "model": "claude-fable-5-1 (confirmed via session metadata: configured and last-served)",
+  "task": "B",
+  "date": "2026-10-24",
+  "turns": 0,
+  "agent_iterations": 4,
+  "tokens_in": 24000,
+  "tokens_out": 10000,
+  "tokens_note": "Estimated: /cost not available. Session budget counter fell by ~34k during Task B (10:52–11:05); output share from characters written (index.html 24 KB + edit/probe scripts ≈ 35k chars ÷ 3.5). ±30%.",
+  "wall_minutes": 13,
+  "file_lines": 518,
+  "file_kb": 24.3,
+  "runs_without_console_error": true,
+  "console_error_count": 0,
+  "checklist_pass": "6/6 (self-judged; human column blank)",
+  "subjective_1to5": null,
+  "failure_mode": "none terminal; night scene initially unreadably dark; door hinge sign bug caught before first run",
+  "screenshots": ["t0.png", "t3s.png", "t8s.png"],
+  "started_utc": "2026-10-24T10:52:15Z",
+  "ended_utc": "2026-10-24T11:05:30Z"
+}

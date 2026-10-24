@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tabletop marble run</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #202328; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; left: 12px; top: 12px; padding: 10px 12px; border-radius: 8px;
+    font: 14px/1.5 system-ui, sans-serif; color: #f1f1f1; background: rgba(20,22,26,.72);
+    user-select: none;
+  }
+  #ui button {
+    font: 600 14px system-ui, sans-serif; padding: 7px 14px; border: 0; border-radius: 6px;
+    background: #ffb347; color: #222; cursor: pointer; margin-right: 8px;
+  }
+  #ui button:disabled { background: #666; color: #bbb; cursor: default; }
+  #ui b { color: #ffd27a; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="ui">
+  <button id="release">Release marble</button>
+  Marbles in play: <b id="count">0</b> / 20 &nbsp;·&nbsp; in tray: <b id="tray">0</b><br>
+  <span style="opacity:.8">Drag to orbit · <b>R</b> clears all marbles</span>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ============================================================ renderer / scene
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a2d33);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.5;
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(1.2, 3.4, 5.2);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0.2, 0.8, 0);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 1;
+controls.maxDistance = 20;
+
+// ============================================================ studio lighting
+const key = new THREE.SpotLight(0xfff4e6, 220, 30, Math.PI / 5, 0.6, 2);
+key.position.set(3.5, 7, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.bias = -0.0002;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 6;
+key.shadow.camera.near = 1; key.shadow.camera.far = 20;
+key.target.position.set(0.3, 0.5, 0);
+scene.add(key, key.target);
+const fill = new THREE.DirectionalLight(0xcfdcff, 0.6);
+fill.position.set(-6, 4, 2);
+scene.add(fill);
+const rim = new THREE.DirectionalLight(0xffe2c0, 0.8);
+rim.position.set(-2, 5, -6);
+scene.add(rim);
+scene.add(new THREE.AmbientLight(0xffffff, 0.15));
+
+// ============================================================ materials
+const matTable = new THREE.MeshStandardMaterial({ color: 0x8a6d4b, roughness: 0.7, metalness: 0.0 });
+const matTrack = new THREE.MeshStandardMaterial({ color: 0xe9e4da, roughness: 0.55, metalness: 0.05 });
+const matRail = new THREE.MeshStandardMaterial({ color: 0x3f8f8a, roughness: 0.5 });
+const matRailGlass = new THREE.MeshPhysicalMaterial({ color: 0x7fd3cc, roughness: 0.15, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+const matAccent = new THREE.MeshStandardMaterial({ color: 0xd9643a, roughness: 0.5 });
+const matFunnel = new THREE.MeshPhysicalMaterial({ color: 0x9fd3e8, roughness: 0.15, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
+const matMetal = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.35, metalness: 0.9 });
+const matPlank = new THREE.MeshStandardMaterial({ color: 0xc98f4e, roughness: 0.6 });
+const matTray = new THREE.MeshStandardMaterial({ color: 0x4b4f58, roughness: 0.8 });
+
+function addMesh(geo, mat, parent = scene) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  parent.add(m); return m;
+}
+
+// ============================================================ physics world
+const MARBLE_R = 0.09;
+const MAX_MARBLES = 20;
+const G = 9.81;
+const H = 1 / 240;                      // fixed physics step
+const colliders = [];                   // static + kinematic shapes
+
+// ---- table
+const TABLE = { x: 8, z: 5, y: 0 };
+const table = addMesh(new THREE.BoxGeometry(TABLE.x, 0.12, TABLE.z), matTable);
+table.position.y = -0.06;
+colliders.push({ type: 'plane', y: 0, friction: 2.0 });
+// backdrop cyclorama
+const cyc = addMesh(new THREE.PlaneGeometry(30, 14), new THREE.MeshStandardMaterial({ color: 0x3a3f49, roughness: 1 }));
+cyc.position.set(0, 4, -5); cyc.castShadow = false;
+const floor = addMesh(new THREE.PlaneGeometry(30, 30), new THREE.MeshStandardMaterial({ color: 0x24272d, roughness: 1 }));
+floor.rotation.x = -Math.PI / 2; floor.position.y = -0.9; floor.castShadow = false;
+for (const [x, z] of [[-3.6, -2.2], [3.6, -2.2], [-3.6, 2.2], [3.6, 2.2]]) {
+  const leg = addMesh(new THREE.CylinderGeometry(0.06, 0.06, 0.8, 12), matMetal);
+  leg.position.set(x, -0.5, z);
+}
+
+// ---- helpers for oriented boxes (floors, rails, plank)
+const _q = new THREE.Quaternion(), _m = new THREE.Matrix4();
+function addBox(center, size, quat, mat, opts = {}) {
+  const half = new THREE.Vector3(size.x / 2, size.y / 2, size.z / 2);
+  const col = { type: 'box', center: center.clone(), half, quat: quat.clone(), inv: quat.clone().invert(), friction: opts.friction ?? 0.25, restitution: opts.restitution ?? 0.05, mesh: null, ...opts };
+  colliders.push(col);
+  if (mat) {
+    const m = addMesh(new THREE.BoxGeometry(size.x, size.y, size.z), mat);
+    m.position.copy(center); m.quaternion.copy(quat);
+    col.mesh = m;
+  }
+  return col;
+}
+// a straight chute from a to b: floor + two rails
+function addChute(a, b, width, mat = matTrack, railMat = matRail, railH = 0.14) {
+  const dir = b.clone().sub(a); const len = dir.length(); dir.normalize();
+  const center = a.clone().add(b).multiplyScalar(0.5);
+  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), dir);
+  // keep the chute's "up" roughly +y: rotate so the local z stays horizontal
+  const localZ = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
+  const horizZ = new THREE.Vector3(-dir.z, 0, dir.x).normalize();
+  const fix = new THREE.Quaternion().setFromUnitVectors(localZ, horizZ);
+  quat.premultiply(fix);
+  addBox(center.clone().add(new THREE.Vector3(0, -0.02, 0).applyQuaternion(quat)), new THREE.Vector3(len, 0.04, width), quat, mat);
+  const up = new THREE.Vector3(0, 1, 0).applyQuaternion(quat);
+  const side = new THREE.Vector3(0, 0, 1).applyQuaternion(quat);
+  for (const s of [-1, 1]) {
+    const c = center.clone().add(side.clone().multiplyScalar(s * (width / 2 + 0.015))).add(up.clone().multiplyScalar(railH / 2 - 0.04));
+    addBox(c, new THREE.Vector3(len, railH, 0.03), quat, railMat);
+  }
+}
+
+// ============================================================ 1. funnel / vortex
+const FUN = { cx: -1.55, cz: -0.1, yRim: 2.05, yHole: 1.45, rRim: 0.95, rHole: 0.2 };
+{
+  const h = FUN.yRim - FUN.yHole;
+  const cone = addMesh(new THREE.CylinderGeometry(FUN.rRim, FUN.rHole, h, 64, 1, true), matFunnel);
+  cone.position.set(FUN.cx, FUN.yHole + h / 2, FUN.cz);
+  cone.castShadow = true;
+  const ring = addMesh(new THREE.TorusGeometry(FUN.rRim, 0.025, 10, 64), matAccent);
+  ring.rotation.x = Math.PI / 2; ring.position.set(FUN.cx, FUN.yRim, FUN.cz);
+  // stand
+  for (let i = 0; i < 3; i++) {
+    const a = i / 3 * Math.PI * 2 + 0.5;
+    const leg = addMesh(new THREE.CylinderGeometry(0.02, 0.02, FUN.yRim, 8), matMetal);
+    leg.position.set(FUN.cx + Math.cos(a) * (FUN.rRim - 0.05), FUN.yRim / 2, FUN.cz + Math.sin(a) * (FUN.rRim - 0.05));
+  }
+  colliders.push({ type: 'cone', ...FUN, slope: (FUN.rRim - FUN.rHole) / h, friction: 0.35, restitution: 0.1 });
+}
+// launch chute feeding the funnel tangentially
+const LAUNCH_TOP = new THREE.Vector3(FUN.cx + 0.72, FUN.yRim + 0.34, FUN.cz - 1.15);
+const LAUNCH_END = new THREE.Vector3(FUN.cx + 0.72, FUN.yRim + 0.12, FUN.cz - 0.45);
+addChute(LAUNCH_TOP, LAUNCH_END, 0.24, matTrack, matAccent, 0.16);
+{
+  const post = addMesh(new THREE.CylinderGeometry(0.025, 0.025, LAUNCH_TOP.y, 8), matMetal);
+  post.position.set(LAUNCH_TOP.x, LAUNCH_TOP.y / 2, LAUNCH_TOP.z);
+}
+
+// ============================================================ chute from the funnel hole to the seesaw
+const DROP_PT = new THREE.Vector3(FUN.cx, 1.22, FUN.cz);                 // under the hole
+addChute(new THREE.Vector3(FUN.cx - 0.3, 1.26, FUN.cz), new THREE.Vector3(0.85, 1.07, 0.0), 0.26, matTrack, matRailGlass, 0.3);
+// a back-stop so a marble dropping from the hole cannot bounce backwards off the chute
+addBox(new THREE.Vector3(FUN.cx - 0.32, 1.42, FUN.cz), new THREE.Vector3(0.03, 0.36, 0.34), new THREE.Quaternion(), matRail);
+{ // support posts
+  for (const [x, z, y] of [[FUN.cx - 0.1, FUN.cz, 1.22], [0.4, 0.02, 1.1]]) {
+    const post = addMesh(new THREE.CylinderGeometry(0.02, 0.02, y, 8), matMetal); post.position.set(x, y / 2, z);
+  }
+}
+
+// ============================================================ 2. seesaw
+const SEESAW = {
+  pivot: new THREE.Vector3(0.75, 0.86, 0), halfLen: 0.62, width: 0.26,
+  angle: 0.2, vel: 0, I: 0.045, rest: 0.2, minA: -0.24, maxA: 0.2, k: 0.25, c: 0.05,
+};
+const plankCol = addBox(SEESAW.pivot, new THREE.Vector3(SEESAW.halfLen * 2, 0.04, SEESAW.width), new THREE.Quaternion(), matPlank, { kinematic: true, friction: 0.25, restitution: 0.05 });
+plankCol.mesh.position.copy(SEESAW.pivot);
+// rails along the plank (kinematic too)
+const plankRails = [];
+for (const s of [-1, 1]) {
+  const r = addBox(SEESAW.pivot, new THREE.Vector3(SEESAW.halfLen * 2, 0.22, 0.03), new THREE.Quaternion(), matRail, { kinematic: true, railSide: s });
+  plankRails.push(r);
+}
+{
+  const stand = addMesh(new THREE.BoxGeometry(0.08, SEESAW.pivot.y - 0.03, 0.34), matMetal);
+  stand.position.set(SEESAW.pivot.x, (SEESAW.pivot.y - 0.03) / 2, 0);
+  const axle = addMesh(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 12), matAccent);
+  axle.rotation.x = Math.PI / 2; axle.position.copy(SEESAW.pivot);
+  // end stops
+  for (const s of [-1, 1]) {
+    const stop = addMesh(new THREE.BoxGeometry(0.06, 0.06, 0.3), matAccent);
+    const a = s > 0 ? SEESAW.minA : SEESAW.maxA;   // right end rests on its stop when tipped down (minA); left end when tipped up
+    stop.position.set(SEESAW.pivot.x + s * (SEESAW.halfLen - 0.05), SEESAW.pivot.y + s * (SEESAW.halfLen - 0.05) * Math.sin(a) - 0.06, 0);
+  }
+}
+function updateSeesawPose() {
+  const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), SEESAW.angle);
+  for (const col of [plankCol, ...plankRails]) {
+    col.quat.copy(q); col.inv.copy(q).invert();
+    const off = new THREE.Vector3(0, col.railSide ? 0.09 : 0, col.railSide ? col.railSide * (SEESAW.width / 2 + 0.015) : 0).applyQuaternion(q);
+    col.center.copy(SEESAW.pivot).add(off);
+    if (col.mesh) { col.mesh.position.copy(col.center); col.mesh.quaternion.copy(q); }
+  }
+}
+updateSeesawPose();
+
+// ============================================================ 3. spiral ramp (helicoid)
+const SPIRAL = {
+  cx: 1.95, cz: 0.56, rIn: 0.3, rOut: 0.82, yTop: 0.62, turns: 2.0,
+  theta0: -Math.PI / 2,                                  // entry angle: marble arrives moving +x
+};
+SPIRAL.thetaEnd = SPIRAL.theta0 + SPIRAL.turns * Math.PI * 2;
+SPIRAL.k = (SPIRAL.yTop - 0.17) / (SPIRAL.turns * Math.PI * 2);   // drop per radian (ramp ends at y = 0.17)
+SPIRAL.yAt = (th) => SPIRAL.yTop - SPIRAL.k * (th - SPIRAL.theta0);
+{
+  // helicoid surface
+  const segs = Math.round(SPIRAL.turns * 64), rs = 6;
+  const pos = [], idx = [], nor = [];
+  for (let i = 0; i <= segs; i++) {
+    const th = SPIRAL.theta0 + (i / segs) * (SPIRAL.thetaEnd - SPIRAL.theta0);
+    const y = SPIRAL.yAt(th);
+    for (let j = 0; j <= rs; j++) {
+      const r = SPIRAL.rIn + (j / rs) * (SPIRAL.rOut - SPIRAL.rIn);
+      pos.push(SPIRAL.cx + r * Math.cos(th), y, SPIRAL.cz + r * Math.sin(th));
+      const n = helicoidNormal(r, th); nor.push(n.x, n.y, n.z);
+    }
+  }
+  for (let i = 0; i < segs; i++) for (let j = 0; j < rs; j++) {
+    const a = i * (rs + 1) + j, b = a + rs + 1;
+    idx.push(a, b, a + 1, a + 1, b, b + 1);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setIndex(idx);
+  const ramp = addMesh(g, new THREE.MeshStandardMaterial({ color: 0xe9e4da, roughness: 0.55, side: THREE.DoubleSide }));
+  ramp.castShadow = true;
+  // outer lip wall (leaves an exit gap at the end)
+  const wallSegs = segs;
+  const wp = [], wi = [];
+  const gapStart = SPIRAL.thetaEnd - 0.12;
+  for (let i = 0; i <= wallSegs; i++) {
+    const th = SPIRAL.theta0 - 0.25 + (i / wallSegs) * (gapStart - SPIRAL.theta0 + 0.25);
+    const y = SPIRAL.yAt(Math.max(th, SPIRAL.theta0));
+    wp.push(SPIRAL.cx + SPIRAL.rOut * Math.cos(th), y - 0.01, SPIRAL.cz + SPIRAL.rOut * Math.sin(th));
+    wp.push(SPIRAL.cx + SPIRAL.rOut * Math.cos(th), y + 0.16, SPIRAL.cz + SPIRAL.rOut * Math.sin(th));
+  }
+  for (let i = 0; i < wallSegs; i++) { const a = i * 2; wi.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+  const wg = new THREE.BufferGeometry();
+  wg.setAttribute('position', new THREE.Float32BufferAttribute(wp, 3)); wg.setIndex(wi); wg.computeVertexNormals();
+  addMesh(wg, new THREE.MeshStandardMaterial({ color: 0x3f8f8a, roughness: 0.5, side: THREE.DoubleSide }));
+  SPIRAL.wallEnd = gapStart;
+  // column
+  const col = addMesh(new THREE.CylinderGeometry(SPIRAL.rIn, SPIRAL.rIn, SPIRAL.yTop + 0.2, 32), matAccent);
+  col.position.set(SPIRAL.cx, (SPIRAL.yTop + 0.2) / 2, SPIRAL.cz);
+  colliders.push({ type: 'helicoid', friction: 0.2, restitution: 0.05 });
+}
+function helicoidNormal(r, th) {
+  // surface P(r,th) = (r cos th, yTop - k (th - th0), r sin th)
+  const dr = new THREE.Vector3(Math.cos(th), 0, Math.sin(th));
+  const dth = new THREE.Vector3(-r * Math.sin(th), -SPIRAL.k, r * Math.cos(th));
+  const n = new THREE.Vector3().crossVectors(dth, dr).normalize();   // points +y
+  if (n.y < 0) n.negate();
+  return n;
+}
+
+// ============================================================ 4. tray
+const TRAY = { x0: 2.55, x1: 3.55, z0: -0.5, z1: 0.42, wallH: 0.28 };
+{
+  const cx = (TRAY.x0 + TRAY.x1) / 2, cz = (TRAY.z0 + TRAY.z1) / 2, w = TRAY.x1 - TRAY.x0, d = TRAY.z1 - TRAY.z0;
+  const floor = addMesh(new THREE.BoxGeometry(w + 0.06, 0.03, d + 0.06), matTray); floor.position.set(cx, 0.015, cz);
+  const wallMat = new THREE.MeshPhysicalMaterial({ color: 0xd8dde6, roughness: 0.2, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
+  const GAP = 0.56, gz = SPIRAL.cz - 0.56;                 // opening in the near wall where the chute comes in
+  const nearWalls = [[TRAY.x0, (TRAY.z0 + gz - GAP / 2) / 2, 0.03, gz - GAP / 2 - TRAY.z0], [TRAY.x0, (gz + GAP / 2 + TRAY.z1) / 2, 0.03, TRAY.z1 - gz - GAP / 2]];
+  TRAY.walls = [...nearWalls, [TRAY.x1, cz, 0.03, d + 0.06], [cx, TRAY.z0, w + 0.06, 0.03], [cx, TRAY.z1, w + 0.06, 0.03]];
+  for (const [x, z, sx, sz] of TRAY.walls) {
+    const wall = addMesh(new THREE.BoxGeometry(sx, TRAY.wallH, sz), wallMat); wall.position.set(x, TRAY.wallH / 2, z); wall.castShadow = false;
+  }
+  // tray colliders: 4 inward-facing walls (as thin boxes) + floor
+  colliders.push({ type: 'box', center: new THREE.Vector3(cx, 0.015, cz), half: new THREE.Vector3(w / 2 + 0.03, 0.015, d / 2 + 0.03), quat: new THREE.Quaternion(), inv: new THREE.Quaternion(), friction: 3.0, restitution: 0.1 });
+  for (const [x, z, sx, sz] of TRAY.walls) {
+    colliders.push({ type: 'box', center: new THREE.Vector3(x, TRAY.wallH / 2, z), half: new THREE.Vector3(sx / 2, TRAY.wallH / 2, sz / 2), quat: new THREE.Quaternion(), inv: new THREE.Quaternion(), friction: 3.0, restitution: 0.1 });
+  }
+}
+// short exit chute from the spiral's bottom to the tray
+addChute(new THREE.Vector3(SPIRAL.cx + 0.02, 0.165, SPIRAL.cz - 0.56), new THREE.Vector3(TRAY.x0 + 0.03, 0.045, SPIRAL.cz - 0.56), 0.5, matTrack, matRail, 0.12);
+
+// ============================================================ marbles
+const marbles = [];
+const marbleGeo = new THREE.SphereGeometry(MARBLE_R, 24, 16);
+const marbleMat = new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.08, metalness: 0.0, clearcoat: 1, clearcoatRoughness: 0.05 });
+const marbleMesh = new THREE.InstancedMesh(marbleGeo, marbleMat, MAX_MARBLES);
+marbleMesh.castShadow = true; marbleMesh.receiveShadow = true;
+marbleMesh.count = 0;
+scene.add(marbleMesh);
+const PALETTE = [0xe63946, 0x2a9d8f, 0xf4a261, 0x457b9d, 0xffd166, 0x9b5de5, 0x06d6a0, 0xef476f, 0x118ab2, 0xffffff];
+
+function spawnMarble() {
+  if (marbles.length >= MAX_MARBLES) return;
+  const m = {
+    p: LAUNCH_TOP.clone().add(new THREE.Vector3(0, MARBLE_R + 0.01, 0.05)),
+    v: new THREE.Vector3(0, 0, 0.3),
+    w: new THREE.Vector3(),
+    q: new THREE.Quaternion(),
+    theta: null,           // unwrapped spiral angle
+    inTray: false,
+    color: new THREE.Color(PALETTE[marbles.length % PALETTE.length]),
+  };
+  marbles.push(m);
+  marbleMesh.count = marbles.length;
+  marbleMesh.setColorAt(marbles.length - 1, m.color);
+  marbleMesh.instanceColor.needsUpdate = true;
+}
+function clearMarbles() { marbles.length = 0; marbleMesh.count = 0; }
+
+// ---- collision queries: each returns {d (penetration > 0), n (unit, pointing out of the surface), vs (surface velocity)} or null
+const _p = new THREE.Vector3(), _loc = new THREE.Vector3(), _cl = new THREE.Vector3(), _n = new THREE.Vector3(), _tmp = new THREE.Vector3();
+function hitPlane(m, c) {
+  const d = MARBLE_R - (m.p.y - c.y);
+  return d > 0 ? { d, n: new THREE.Vector3(0, 1, 0), vs: null } : null;
+}
+function hitBox(m, c) {
+  _loc.copy(m.p).sub(c.center).applyQuaternion(c.inv);
+  _cl.set(
+    THREE.MathUtils.clamp(_loc.x, -c.half.x, c.half.x),
+    THREE.MathUtils.clamp(_loc.y, -c.half.y, c.half.y),
+    THREE.MathUtils.clamp(_loc.z, -c.half.z, c.half.z));
+  _tmp.copy(_loc).sub(_cl);
+  const dist = _tmp.length();
+  if (dist >= MARBLE_R) return null;
+  let n;
+  if (dist > 1e-6) n = _tmp.clone().divideScalar(dist);
+  else { // centre inside the box: push out along the axis of least penetration
+    const dx = c.half.x - Math.abs(_loc.x), dy = c.half.y - Math.abs(_loc.y), dz = c.half.z - Math.abs(_loc.z);
+    if (dy <= dx && dy <= dz) n = new THREE.Vector3(0, Math.sign(_loc.y) || 1, 0);
+    else if (dx <= dz) n = new THREE.Vector3(Math.sign(_loc.x) || 1, 0, 0);
+    else n = new THREE.Vector3(0, 0, Math.sign(_loc.z) || 1);
+    const pen = Math.min(dx, dy, dz);
+    n.applyQuaternion(c.quat);
+    return { d: pen + MARBLE_R, n, vs: surfaceVel(c, m.p) };
+  }
+  n.applyQuaternion(c.quat);
+  return { d: MARBLE_R - dist, n, vs: surfaceVel(c, m.p) };
+}
+function surfaceVel(c, p) {
+  if (!c.kinematic) return null;
+  // plank rotates about the pivot with angular velocity SEESAW.vel around +z
+  const r = _tmp.copy(p).sub(SEESAW.pivot);
+  return new THREE.Vector3(-SEESAW.vel * r.y, SEESAW.vel * r.x, 0);
+}
+function hitCone(m, c) {
+  const dx = m.p.x - c.cx, dz = m.p.z - c.cz;
+  const r = Math.hypot(dx, dz);
+  if (m.p.y < c.yHole - 0.02 || m.p.y > c.yRim + 0.35) return null;   // wall continues a little above the rim
+  if (r < c.rHole - 0.02 && m.p.y < c.yHole + 0.15) return null;      // over the hole: falls through
+  const R = c.rHole + (m.p.y - c.yHole) * c.slope;                   // cone radius at this height
+  const F = r - R;                                                   // >0 outside the wall
+  const len = Math.sqrt(1 + c.slope * c.slope);
+  const dist = F / len;                                              // signed distance to the wall (negative inside)
+  if (dist < -MARBLE_R) return null;
+  const inv = r > 1e-6 ? 1 / r : 0;
+  const n = new THREE.Vector3(-dx * inv, c.slope, -dz * inv).divideScalar(len);   // inward-pointing normal
+  return { d: dist + MARBLE_R, n, vs: null };
+}
+function hitHelicoid(m, c) {
+  const dx = m.p.x - SPIRAL.cx, dz = m.p.z - SPIRAL.cz;
+  const r = Math.hypot(dx, dz);
+  let th = Math.atan2(dz, dx);
+  const near = r < SPIRAL.rOut + 0.25 && m.p.y < SPIRAL.yTop + 0.35 && m.p.y > 0.0;
+  if (!near) { m.theta = null; return null; }
+  // unwrap against the marble's own history
+  if (m.theta === null) {
+    // first time near the spiral: take the highest turn whose surface is at or below the marble
+    let best = null;
+    for (let k = -1; k <= 3; k++) {
+      const cand = th + k * Math.PI * 2;
+      if (cand < SPIRAL.theta0 - 0.3 || cand > SPIRAL.thetaEnd + 0.3) continue;
+      const ys = SPIRAL.yAt(cand);
+      if (ys <= m.p.y + MARBLE_R && (best === null || ys > SPIRAL.yAt(best))) best = cand;
+    }
+    if (best === null) return null;
+    th = best;
+  } else {
+    th += Math.round((m.theta - th) / (Math.PI * 2)) * Math.PI * 2;
+  }
+  m.theta = th;
+  const out = [];
+  // ramp surface
+  if (th >= SPIRAL.theta0 - 0.05 && th <= SPIRAL.thetaEnd && r > SPIRAL.rIn - 0.05 && r < SPIRAL.rOut + 0.05) {
+    const ys = SPIRAL.yAt(th);
+    const n = helicoidNormal(Math.max(r, 0.05), th);
+    const gap = (m.p.y - ys) * n.y;          // perpendicular distance from the surface
+    if (gap < MARBLE_R && gap > -MARBLE_R * 2) out.push({ d: MARBLE_R - gap, n, vs: null });
+  }
+  // inner column (full height)
+  if (m.p.y < SPIRAL.yTop + 0.2 && r < SPIRAL.rIn + MARBLE_R && r > 1e-6) {
+    out.push({ d: SPIRAL.rIn + MARBLE_R - r, n: new THREE.Vector3(dx / r, 0, dz / r), vs: null });
+  }
+  // outer wall, only where the lip exists (and only when near the ramp height)
+  if (th >= SPIRAL.theta0 - 0.25 && th <= SPIRAL.wallEnd && r > SPIRAL.rOut - MARBLE_R && r < SPIRAL.rOut + 0.2) {
+    const ys = SPIRAL.yAt(Math.max(th, SPIRAL.theta0));
+    if (m.p.y > ys - 0.05 && m.p.y < ys + 0.16 + MARBLE_R) {
+      out.push({ d: r - (SPIRAL.rOut - MARBLE_R), n: new THREE.Vector3(-dx / r, 0, -dz / r), vs: null });
+    }
+  }
+  if (th > SPIRAL.thetaEnd + 0.5 || m.p.y < 0.05) m.theta = null;   // left the spiral
+  return out.length ? out : null;
+}
+
+function resolveContact(m, hit, c, h) {
+  if (!hit) return;
+  const hits = Array.isArray(hit) ? hit : [hit];
+  for (const hh of hits) {
+    const { d, n, vs } = hh;
+    if (d <= 0) continue;
+    m.p.addScaledVector(n, d);
+    const rel = vs ? _tmp.copy(m.v).sub(vs) : _tmp.copy(m.v);
+    const vn = rel.dot(n);
+    if (vn < 0) {
+      const e = Math.abs(vn) > 0.6 ? (c.restitution ?? 0.15) : 0;
+      const jn = -(1 + e) * vn;                      // per unit mass
+      m.v.addScaledVector(n, jn);
+      // reaction on a kinematic plank: torque about the pivot
+      if (c.kinematic) {
+        const r = _p.copy(m.p).sub(SEESAW.pivot);
+        const J = _n.copy(n).multiplyScalar(jn * MARBLE_MASS);
+        const torque = r.x * J.y - r.y * J.x;         // (r × J)_z
+        SEESAW.vel -= torque / SEESAW.I;
+      }
+    }
+    // rolling resistance: exponential decay of the tangential velocity at rate `friction` (1/s)
+    const vt = _p.copy(m.v).sub(vs || _zero).addScaledVector(n, -(_p.dot(n)));
+    const f = c.friction ?? 0.3;
+    m.v.addScaledVector(vt, -(1 - Math.exp(-f * h)));
+    // rolling: ω = n × v / R
+    m.w.crossVectors(n, vt).divideScalar(MARBLE_R);
+  }
+}
+const _zero = new THREE.Vector3();
+const MARBLE_MASS = 0.02;
+
+function stepPhysics(h) {
+  // seesaw: restoring spring + damping, stops
+  SEESAW.vel += (-SEESAW.k * (SEESAW.angle - SEESAW.rest) / SEESAW.I - SEESAW.c * SEESAW.vel / SEESAW.I) * h;
+  SEESAW.angle += SEESAW.vel * h;
+  if (SEESAW.angle < SEESAW.minA) { SEESAW.angle = SEESAW.minA; if (SEESAW.vel < 0) SEESAW.vel = 0; }
+  if (SEESAW.angle > SEESAW.maxA) { SEESAW.angle = SEESAW.maxA; if (SEESAW.vel > 0) SEESAW.vel = 0; }
+  updateSeesawPose();
+
+  // integrate marbles
+  for (const m of marbles) {
+    m.v.y -= G * h;
+    m.v.multiplyScalar(1 - 0.02 * h);              // air drag
+    m.p.addScaledVector(m.v, h);
+  }
+  // contacts (two passes so stacks settle)
+  for (let pass = 0; pass < 2; pass++) {
+    for (const m of marbles) {
+      for (const c of colliders) {
+        let hit = null;
+        if (c.type === 'plane') hit = hitPlane(m, c);
+        else if (c.type === 'box') hit = hitBox(m, c);
+        else if (c.type === 'cone') hit = hitCone(m, c);
+        else if (c.type === 'helicoid') hit = hitHelicoid(m, c);
+        if (hit) resolveContact(m, hit, c, h);
+      }
+    }
+    // marble–marble
+    for (let i = 0; i < marbles.length; i++) for (let j = i + 1; j < marbles.length; j++) {
+      const a = marbles[i], b = marbles[j];
+      _n.copy(b.p).sub(a.p);
+      const dist = _n.length();
+      if (dist >= 2 * MARBLE_R || dist < 1e-6) continue;
+      _n.divideScalar(dist);
+      const pen = 2 * MARBLE_R - dist;
+      a.p.addScaledVector(_n, -pen / 2); b.p.addScaledVector(_n, pen / 2);
+      const vrel = _tmp.copy(b.v).sub(a.v).dot(_n);
+      if (vrel < 0) {
+        const e = Math.abs(vrel) > 0.5 ? 0.12 : 0;
+        const j = -(1 + e) * vrel / 2;
+        a.v.addScaledVector(_n, -j); b.v.addScaledVector(_n, j);
+      }
+    }
+  }
+  // bookkeeping
+  for (let i = marbles.length - 1; i >= 0; i--) {
+    const m = marbles[i];
+    m.inTray = m.p.x > TRAY.x0 && m.p.x < TRAY.x1 && m.p.z > TRAY.z0 && m.p.z < TRAY.z1 && m.p.y < TRAY.wallH + 0.3;
+    if (m.p.y < -0.8 || Math.abs(m.p.x) > 6 || Math.abs(m.p.z) > 4) {     // fell off the table: remove
+      marbles.splice(i, 1);
+    }
+    // integrate orientation for the rolling look
+    const wl = m.w.length();
+    if (wl > 1e-6) { _q.setFromAxisAngle(_tmp.copy(m.w).divideScalar(wl), wl * h); m.q.premultiply(_q); }
+  }
+  if (marbleMesh.count !== marbles.length) {
+    marbleMesh.count = marbles.length;
+    marbles.forEach((m, i) => marbleMesh.setColorAt(i, m.color));
+    if (marbleMesh.instanceColor) marbleMesh.instanceColor.needsUpdate = true;
+  }
+}
+
+function syncMarbles() {
+  for (let i = 0; i < marbles.length; i++) {
+    _m.compose(marbles[i].p, marbles[i].q, _one);
+    marbleMesh.setMatrixAt(i, _m);
+  }
+  marbleMesh.instanceMatrix.needsUpdate = true;
+}
+const _one = new THREE.Vector3(1, 1, 1);
+
+// ============================================================ UI
+const btn = document.getElementById('release');
+const elCount = document.getElementById('count');
+const elTray = document.getElementById('tray');
+btn.addEventListener('click', () => spawnMarble());
+window.addEventListener('keydown', (e) => { if (e.code === 'KeyR') clearMarbles(); });
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ============================================================ loop
+const clock = new THREE.Clock();
+let acc = 0;
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 1 / 20);
+  acc += dt;
+  let steps = 0;
+  while (acc >= H && steps < 12) { stepPhysics(H); acc -= H; steps++; }
+  if (steps === 12) acc = 0;
+  syncMarbles();
+  elCount.textContent = marbles.length;
+  elTray.textContent = marbles.filter(m => m.inTray).length;
+  btn.disabled = marbles.length >= MAX_MARBLES;
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

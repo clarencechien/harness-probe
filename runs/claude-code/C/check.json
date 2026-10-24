@@ -1,0 +1,16 @@
+{
+  "file": "runs/claude-code/C/index.html",
+  "checked_at": "2026-10-24T11:33:00.755Z",
+  "file_lines": 565,
+  "file_kb": 26.9,
+  "console_error_count": 0,
+  "runs_without_console_error": true,
+  "errors": [],
+  "warnings": [],
+  "failed_requests": [],
+  "screenshots": {
+    "t0": "runs/claude-code/C/t0.png",
+    "t3s": "runs/claude-code/C/t3s.png",
+    "t8s": "runs/claude-code/C/t8s.png"
+  }
+}
