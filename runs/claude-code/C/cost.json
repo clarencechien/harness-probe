@@ -1,0 +1,22 @@
+{
+  "surface": "claude-code",
+  "model": "claude-fable-5-1 (session-configured; serving model may differ)",
+  "task": "C",
+  "date": "2026-10-24",
+  "turns": 0,
+  "agent_iterations": 5,
+  "tokens_in": 39000,
+  "tokens_out": 13000,
+  "tokens_note": "Estimated: /cost not available. Session budget counter fell by ~52k during Task C (11:07–11:26); output share from characters written (index.html 27 KB + edit/probe scripts ≈ 45k chars ÷ 3.5). ±30%.",
+  "wall_minutes": 19,
+  "file_lines": 565,
+  "file_kb": 26.9,
+  "runs_without_console_error": true,
+  "console_error_count": 0,
+  "checklist_pass": "6/6 (self-judged; human column blank)",
+  "subjective_1to5": null,
+  "failure_mode": "none terminal; 4 physics-flow bugs (friction units, spiral unwrap, exit gap/slope, low rails) found only by position tracing, invisible to console+screenshot judge",
+  "screenshots": ["t0.png", "t3s.png", "t8s.png"],
+  "started_utc": "2026-10-24T11:07:20Z",
+  "ended_utc": "2026-10-24T11:26:30Z"
+}

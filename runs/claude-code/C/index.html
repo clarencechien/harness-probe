@@ -87,6 +87,7 @@ scene.add(new THREE.AmbientLight(0xffffff, 0.15));
 const matTable = new THREE.MeshStandardMaterial({ color: 0x8a6d4b, roughness: 0.7, metalness: 0.0 });
 const matTrack = new THREE.MeshStandardMaterial({ color: 0xe9e4da, roughness: 0.55, metalness: 0.05 });
 const matRail = new THREE.MeshStandardMaterial({ color: 0x3f8f8a, roughness: 0.5 });
+const matRailGlass = new THREE.MeshPhysicalMaterial({ color: 0x7fd3cc, roughness: 0.15, transparent: true, opacity: 0.4, side: THREE.DoubleSide });
 const matAccent = new THREE.MeshStandardMaterial({ color: 0xd9643a, roughness: 0.5 });
 const matFunnel = new THREE.MeshPhysicalMaterial({ color: 0x9fd3e8, roughness: 0.15, transparent: true, opacity: 0.45, side: THREE.DoubleSide });
 const matMetal = new THREE.MeshStandardMaterial({ color: 0x9aa0a8, roughness: 0.35, metalness: 0.9 });
@@ -181,7 +182,7 @@ addChute(LAUNCH_TOP, LAUNCH_END, 0.24, matTrack, matAccent, 0.16);
 
 // ============================================================ chute from the funnel hole to the seesaw
 const DROP_PT = new THREE.Vector3(FUN.cx, 1.22, FUN.cz);                 // under the hole
-addChute(new THREE.Vector3(FUN.cx - 0.3, 1.26, FUN.cz), new THREE.Vector3(0.85, 1.07, 0.0), 0.26, matTrack, matRail, 0.3);
+addChute(new THREE.Vector3(FUN.cx - 0.3, 1.26, FUN.cz), new THREE.Vector3(0.85, 1.07, 0.0), 0.26, matTrack, matRailGlass, 0.3);
 // a back-stop so a marble dropping from the hole cannot bounce backwards off the chute
 addBox(new THREE.Vector3(FUN.cx - 0.32, 1.42, FUN.cz), new THREE.Vector3(0.03, 0.36, 0.34), new THREE.Quaternion(), matRail);
 { // support posts
