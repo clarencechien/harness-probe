@@ -1,0 +1,9 @@
+# Task B · brougham from a reference image — Claude Code iterations
+
+Start: 2026-10-24T10:52:15Z (60-minute wall-clock budget → hard stop 11:52:15Z)
+Input: prompts/B.md verbatim + inputs/carriage.jpg (viewed as an image before writing any code). Judge: `node tools/check.mjs runs/claude-code/B/index.html`.
+
+| iter | time (UTC) | what changed | ran? | console errors | screenshots | notes |
+|---|---|---|---|---|---|---|
+| 1 | 10:55 | First full write: periodic cobbled road (InstancedMesh, deterministic hash heights), 5 buried transverse ridges as visible bump geometry, carriage from boxes/cylinders/tori following the drawing (low boot + tall glazed cabin + box seat + two corner lamps + big rear/small front spoked wheels + shafts), hinge-door groups with raycast click, flickering PointLight lamps, 4-corner spring/damper body (heave/pitch/roll) on wheels that read the road envelope, R reset, fog, OrbitControls follow | yes | 0 | t0/t3s/t8s, scratch B1/* | Door-hinge sign was wrong on first write (would swing into the cabin) — caught by reading the code before running, fixed with sed. Probe: a door toggles on click; R works but HUD distance was simTime-based so looked un-reset. Scene far too dark to read the silhouette; open door glass looked opaque. Headless judge: page is heavy (15k instances + 11 point lights) → ~2 fps real throughput. |
+| 2 | 10:59 | Moon 0.55→1.4, ambient ×2, blue rim light, exposure 1.35, fog 0.028→0.02; glass depthWrite off; additive glow sprites on the lamp flames; point lights only on the centre period's posts; HUD shows distance-travelled (resets) and body heave/pitch so the probe can read the suspension | yes | 0 | t0/t3s/t8s, scratch B2/* | Zoomed screenshot finally reads: black brougham, lit box seat, warm lamp glow on the body, cobbles with kerb. HUD time-series shows 1–3 cm heave / ±0.5° pitch from cobbles alone. Bump reaction being probed on a scratch copy that starts at x=20 (first ridge at 22). |

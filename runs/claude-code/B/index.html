@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Brougham at night</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05070d; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; left: 12px; top: 12px; padding: 8px 12px; border-radius: 6px;
+    font: 13px/1.5 system-ui, sans-serif; color: #e8dcc8; background: rgba(0,0,0,.45);
+    pointer-events: none; user-select: none;
+  }
+  #hud b { color: #ffb75a; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud">Distance: <b id="dist">0</b> m &nbsp;|&nbsp; Doors: <b id="doors">closed / closed</b> &nbsp;|&nbsp; Body: <b id="susp">0 cm, 0.0°</b><br>
+Drag to orbit · <b>click a door</b> to open/close · <b>R</b> resets to the start</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- renderer / scene ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.35;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x060810);
+scene.fog = new THREE.FogExp2(0x070a14, 0.02);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 400);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 2.5;
+controls.maxDistance = 40;
+
+// ---------- lights ----------
+const moon = new THREE.DirectionalLight(0x9fb3e6, 1.4);
+moon.position.set(-12, 22, 10);
+moon.castShadow = true;
+moon.shadow.mapSize.set(1536, 1536);
+moon.shadow.camera.near = 1; moon.shadow.camera.far = 80;
+moon.shadow.camera.left = -14; moon.shadow.camera.right = 14;
+moon.shadow.camera.top = 14; moon.shadow.camera.bottom = -14;
+moon.shadow.bias = -0.0004;
+moon.shadow.normalBias = 0.03;
+scene.add(moon); scene.add(moon.target);
+scene.add(new THREE.AmbientLight(0x3a4668, 0.7));
+const rim = new THREE.DirectionalLight(0x5a6cff, 0.5); rim.position.set(8, 6, -14); scene.add(rim);
+
+// ---------- road: periodic cobbles + visible bumps ----------
+const PERIOD = 120;              // the road repeats every 120 m; the scene is three periods long
+const ROAD_W = 6.4;
+const COB = 0.38;                // cobble pitch
+const NX = Math.round(PERIOD / COB);
+const NZ = Math.round(ROAD_W / COB);
+const COB_H_MAX = 0.035;         // cobble top height variation (visible geometry, read by the suspension)
+
+function hash(i, j) {
+  const s = Math.sin(((i % NX) + NX) % NX * 127.1 + j * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function cobbleTop(x, z) {
+  const i = Math.floor(x / COB), j = Math.floor((z + ROAD_W / 2) / COB);
+  return COB_H_MAX * hash(i, j);
+}
+// transverse ridges (buried logs / drainage bars) — rendered as cylinders, same numbers used here
+const BUMPS = [ { x: 22, r: 0.13 }, { x: 47, r: 0.16 }, { x: 71, r: 0.11 }, { x: 74.5, r: 0.11 }, { x: 101, r: 0.17 } ];
+const BUMP_BURY = 0.03;
+function bumpHeight(x) {
+  const px = ((x % PERIOD) + PERIOD) % PERIOD;
+  let h = 0;
+  for (const b of BUMPS) {
+    let d = px - b.x;
+    if (d > PERIOD / 2) d -= PERIOD; else if (d < -PERIOD / 2) d += PERIOD;
+    if (Math.abs(d) < b.r) h = Math.max(h, Math.sqrt(b.r * b.r - d * d) - BUMP_BURY);
+  }
+  return Math.max(0, h);
+}
+function roadHeight(x, z) { return Math.max(cobbleTop(x, z), bumpHeight(x)); }
+// Height of a wheel hub of radius R rolling over the profile at x (wheel sees the envelope, not the point).
+function hubHeight(x, z, R) {
+  let best = -Infinity;
+  const n = 9;
+  for (let k = 0; k < n; k++) {
+    const dx = (k / (n - 1) - 0.5) * 2 * R * 0.9;
+    const y = roadHeight(x + dx, z) + Math.sqrt(Math.max(0, R * R - dx * dx));
+    if (y > best) best = y;
+  }
+  return best;
+}
+
+const roadGroup = new THREE.Group();
+scene.add(roadGroup);
+{
+  const base = new THREE.Mesh(new THREE.PlaneGeometry(PERIOD * 3 + 20, ROAD_W + 0.4),
+    new THREE.MeshStandardMaterial({ color: 0x1b1a1a, roughness: 1 }));
+  base.rotation.x = -Math.PI / 2; base.position.y = -0.02; base.receiveShadow = true;
+  roadGroup.add(base);
+
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(PERIOD * 3 + 40, 120),
+    new THREE.MeshStandardMaterial({ color: 0x101510, roughness: 1 }));
+  ground.rotation.x = -Math.PI / 2; ground.position.y = -0.06; ground.receiveShadow = true;
+  roadGroup.add(ground);
+
+  // cobbles
+  const cobGeo = new THREE.BoxGeometry(COB * 0.86, 0.12, COB * 0.86, 1, 1, 1);
+  const cobMat = new THREE.MeshStandardMaterial({ color: 0x5a5651, roughness: 0.85, metalness: 0.05 });
+  const count = NX * 3 * NZ;
+  const cobbles = new THREE.InstancedMesh(cobGeo, cobMat, count);
+  cobbles.castShadow = false; cobbles.receiveShadow = true;
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), sc = new THREE.Vector3();
+  const col = new THREE.Color();
+  let k = 0;
+  for (let per = -1; per <= 1; per++) {
+    for (let i = 0; i < NX; i++) {
+      for (let j = 0; j < NZ; j++) {
+        const h = hash(i, j);
+        const x = per * PERIOD + (i + 0.5) * COB;
+        const z = -ROAD_W / 2 + (j + 0.5) * COB;
+        const top = COB_H_MAX * h;
+        p.set(x + (hash(i + 7, j + 3) - 0.5) * 0.03, top - 0.06, z + (hash(i + 2, j + 9) - 0.5) * 0.03);
+        q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), (hash(i + 5, j + 1) - 0.5) * 0.25);
+        sc.set(0.9 + hash(i + 1, j) * 0.2, 1, 0.9 + hash(i, j + 1) * 0.2);
+        m.compose(p, q, sc);
+        cobbles.setMatrixAt(k, m);
+        col.setHSL(0.08, 0.08, 0.28 + 0.14 * hash(i + 3, j + 5));
+        cobbles.setColorAt(k, col);
+        k++;
+      }
+    }
+  }
+  cobbles.instanceMatrix.needsUpdate = true;
+  roadGroup.add(cobbles);
+
+  // bumps (visible ridges across the road)
+  const bumpMat = new THREE.MeshStandardMaterial({ color: 0x6b5a46, roughness: 0.9 });
+  for (let per = -1; per <= 1; per++) for (const b of BUMPS) {
+    const ridge = new THREE.Mesh(new THREE.CylinderGeometry(b.r, b.r, ROAD_W, 20), bumpMat);
+    ridge.rotation.x = Math.PI / 2;
+    ridge.position.set(per * PERIOD + b.x, -BUMP_BURY, 0);
+    ridge.castShadow = true; ridge.receiveShadow = true;
+    roadGroup.add(ridge);
+  }
+
+  // kerbs and a few street lamps / walls for scale
+  const kerbMat = new THREE.MeshStandardMaterial({ color: 0x3c3a36, roughness: 0.9 });
+  for (const s of [-1, 1]) {
+    const kerb = new THREE.Mesh(new THREE.BoxGeometry(PERIOD * 3 + 20, 0.16, 0.35), kerbMat);
+    kerb.position.set(0, 0.02, s * (ROAD_W / 2 + 0.2)); kerb.receiveShadow = true; kerb.castShadow = true;
+    roadGroup.add(kerb);
+  }
+  const postMat = new THREE.MeshStandardMaterial({ color: 0x1a1d22, roughness: 0.6, metalness: 0.6 });
+  const glowMat = new THREE.MeshStandardMaterial({ color: 0x332200, emissive: 0xffb050, emissiveIntensity: 2.0 });
+  const wallMat = new THREE.MeshStandardMaterial({ color: 0x2a2724, roughness: 1 });
+  for (let per = -1; per <= 1; per++) {
+    for (const lx of [10, 50, 90]) {
+      const s = lx === 50 ? 1 : -1;
+      const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 4.2, 10), postMat);
+      post.position.set(per * PERIOD + lx, 2.1, s * (ROAD_W / 2 + 0.9)); post.castShadow = true;
+      roadGroup.add(post);
+      const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.5, 0.34), glowMat);
+      lamp.position.set(per * PERIOD + lx, 4.3, s * (ROAD_W / 2 + 0.9));
+      roadGroup.add(lamp);
+      if (per === 0) {
+        const pl = new THREE.PointLight(0xffb050, 16, 24, 2);
+        pl.position.copy(lamp.position); pl.position.y -= 0.3;
+        roadGroup.add(pl);
+      }
+    }
+    // low garden walls with gaps
+    for (const s of [-1, 1]) for (let wx = 0; wx < PERIOD; wx += 30) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(18, 1.1, 0.4), wallMat);
+      wall.position.set(per * PERIOD + wx + 9, 0.55, s * (ROAD_W / 2 + 3.2));
+      wall.castShadow = true; wall.receiveShadow = true;
+      roadGroup.add(wall);
+    }
+  }
+}
+
+// ---------- carriage (procedural, proportions from the reference drawing) ----------
+// Reference: brougham — low rounded boot in front, tall glazed cabin behind, raised box seat
+// on the boot, lamp at each front corner of the cabin, big rear wheels, smaller front wheels.
+const matBlack = new THREE.MeshStandardMaterial({ color: 0x0c0c0e, roughness: 0.35, metalness: 0.25 });
+const matGloss = new THREE.MeshStandardMaterial({ color: 0x111114, roughness: 0.22, metalness: 0.35 });
+const matGold = new THREE.MeshStandardMaterial({ color: 0xc9a24a, roughness: 0.4, metalness: 0.8 });
+const matIron = new THREE.MeshStandardMaterial({ color: 0x3b3f47, roughness: 0.5, metalness: 0.8 });
+const matWood = new THREE.MeshStandardMaterial({ color: 0x5a4a3a, roughness: 0.8 });
+const matLeather = new THREE.MeshStandardMaterial({ color: 0x2a1e18, roughness: 0.9 });
+const matGlass = new THREE.MeshPhysicalMaterial({ color: 0xbfd8ee, roughness: 0.08, metalness: 0, transparent: true, opacity: 0.3, depthWrite: false, side: THREE.DoubleSide });
+const matFlame = new THREE.MeshBasicMaterial({ color: 0xffc46a });
+const matLampGlass = new THREE.MeshPhysicalMaterial({ color: 0xffe0b0, roughness: 0.1, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+
+const carriage = new THREE.Group();          // moves along the road (x), sits on the ground
+scene.add(carriage);
+const body = new THREE.Group();              // sprung mass: heave / pitch / roll
+carriage.add(body);
+
+function mesh(geo, mat, parent, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true;
+  parent.add(m); return m;
+}
+
+// Dimensions (metres). Forward = +x.
+const CAB_L = 1.45, CAB_W = 1.45, CAB_H = 1.45;      // glazed cabin
+const BOOT_L = 1.0, BOOT_H = 0.72;                   // low front section
+const FLOOR_Y = 0.62;                                // body floor height at rest (above ground)
+const BODY_REST = FLOOR_Y;
+
+// cabin (sides are built from panels so the doors have real openings)
+const cab = new THREE.Group(); body.add(cab);
+cab.position.set(-0.55, 0, 0);
+mesh(new THREE.BoxGeometry(CAB_L, 0.08, CAB_W), matBlack, cab, 0, 0.04, 0);                       // floor
+mesh(new THREE.BoxGeometry(CAB_L + 0.16, 0.07, CAB_W + 0.16), matGloss, cab, 0, CAB_H + 0.035, 0); // roof slab
+mesh(new THREE.BoxGeometry(CAB_L * 0.9, 0.08, CAB_W * 0.9), matGloss, cab, 0, CAB_H + 0.11, 0);    // domed roof top
+mesh(new THREE.BoxGeometry(0.06, CAB_H, CAB_W), matBlack, cab, -CAB_L / 2 + 0.03, CAB_H / 2, 0);   // back wall
+mesh(new THREE.BoxGeometry(0.06, CAB_H, CAB_W), matBlack, cab, CAB_L / 2 - 0.03, CAB_H / 2, 0);    // front wall (behind the seat)
+const frontWindow = mesh(new THREE.BoxGeometry(0.02, 0.5, 0.8), matGlass, cab, CAB_L / 2 - 0.03, CAB_H * 0.68, 0);
+frontWindow.castShadow = false;
+// lower side panels, door pillars, and the quarter panel behind each door
+const DOOR_W = 0.78, DOOR_H = 1.22, DOOR_X = 0.12;  // door centred slightly forward in the cabin side
+for (const s of [-1, 1]) {
+  const z = s * CAB_W / 2;
+  mesh(new THREE.BoxGeometry(CAB_L, 0.16, 0.06), matBlack, cab, 0, 0.08, z);                               // sill
+  mesh(new THREE.BoxGeometry(CAB_L, 0.18, 0.06), matBlack, cab, 0, CAB_H - 0.09, z);                       // cant rail
+  const rearW = CAB_L / 2 + (DOOR_X - DOOR_W / 2);
+  mesh(new THREE.BoxGeometry(rearW, CAB_H, 0.06), matBlack, cab, -CAB_L / 2 + rearW / 2, CAB_H / 2, z);    // rear quarter (solid, like the drawing)
+  const frontW = CAB_L / 2 - (DOOR_X + DOOR_W / 2);
+  mesh(new THREE.BoxGeometry(frontW, CAB_H, 0.06), matBlack, cab, CAB_L / 2 - frontW / 2, CAB_H / 2, z);   // front pillar
+  // gold coach line
+  mesh(new THREE.BoxGeometry(CAB_L, 0.02, 0.005), matGold, cab, 0, 0.62, z + s * 0.033);
+}
+
+// doors: hinge at the front edge, swing outwards on click
+const doors = [];
+for (const s of [-1, 1]) {
+  const hinge = new THREE.Group();
+  hinge.position.set(DOOR_X + DOOR_W / 2, 0.16, s * CAB_W / 2);
+  cab.add(hinge);
+  const d = new THREE.Group(); hinge.add(d);
+  d.position.set(-DOOR_W / 2, 0, 0);
+  mesh(new THREE.BoxGeometry(DOOR_W, 0.56, 0.05), matGloss, d, 0, 0.28, 0);                                 // lower panel
+  mesh(new THREE.BoxGeometry(0.06, DOOR_H, 0.05), matBlack, d, -DOOR_W / 2 + 0.03, DOOR_H / 2, 0);          // rear stile
+  mesh(new THREE.BoxGeometry(0.06, DOOR_H, 0.05), matBlack, d, DOOR_W / 2 - 0.03, DOOR_H / 2, 0);           // front stile
+  mesh(new THREE.BoxGeometry(DOOR_W, 0.05, 0.05), matBlack, d, 0, DOOR_H - 0.025, 0);                       // top rail
+  const glass = mesh(new THREE.BoxGeometry(DOOR_W - 0.12, DOOR_H - 0.56 - 0.05, 0.015), matGlass, d, 0, 0.56 + (DOOR_H - 0.56 - 0.05) / 2, 0);
+  glass.castShadow = false;
+  mesh(new THREE.BoxGeometry(0.12, 0.03, 0.04), matGold, d, -DOOR_W / 2 + 0.16, 0.62, s * 0.04);           // handle
+  mesh(new THREE.SphereGeometry(0.045, 10, 8), matGold, d, 0, 0.3, s * 0.03);                               // crest medallion
+  const door = { hinge, side: s, open: false, angle: 0, meshes: [] };
+  d.traverse(o => { if (o.isMesh) { o.userData.door = door; door.meshes.push(o); } });
+  doors.push(door);
+}
+
+// boot (low front section) with a curved dash, footboard and the driver's box seat
+const boot = new THREE.Group(); body.add(boot);
+boot.position.set(CAB_L / 2 - 0.55 + BOOT_L / 2 - 0.02, 0, 0);
+mesh(new THREE.BoxGeometry(BOOT_L, BOOT_H, CAB_W * 0.92), matGloss, boot, 0, BOOT_H / 2, 0);
+const dash = mesh(new THREE.CylinderGeometry(0.36, 0.36, CAB_W * 0.92, 16, 1, false, 0, Math.PI), matGloss, boot, BOOT_L / 2 - 0.02, BOOT_H - 0.05, 0);
+dash.rotation.z = Math.PI / 2; dash.rotation.y = Math.PI / 2;
+// driver's seat
+const seat = new THREE.Group(); boot.add(seat);
+seat.position.set(-0.05, BOOT_H, 0);
+mesh(new THREE.BoxGeometry(0.62, 0.3, 1.2), matBlack, seat, 0, 0.15, 0);                // box
+mesh(new THREE.BoxGeometry(0.6, 0.12, 1.16), matLeather, seat, 0, 0.36, 0);             // cushion
+mesh(new THREE.BoxGeometry(0.06, 0.42, 1.16), matLeather, seat, -0.28, 0.6, 0);          // back rest
+mesh(new THREE.CylinderGeometry(0.02, 0.02, 1.2, 8), matIron, seat, -0.3, 0.86, 0).rotation.x = Math.PI / 2; // rail
+// footboard
+mesh(new THREE.BoxGeometry(0.55, 0.05, 1.1), matWood, boot, BOOT_L / 2 + 0.25, BOOT_H * 0.55, 0);
+
+// lamps on the front corners of the cabin
+function makeGlowTex() {
+  const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,220,160,1)'); grd.addColorStop(0.3, 'rgba(255,170,80,0.5)'); grd.addColorStop(1, 'rgba(255,140,40,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const glowTex = makeGlowTex();
+const lamps = [];
+for (const s of [-1, 1]) {
+  const L = new THREE.Group();
+  L.position.set(CAB_L / 2 - 0.55 + 0.1, CAB_H - 0.25, s * (CAB_W / 2 + 0.16));
+  body.add(L);
+  mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.3, 8), matIron, L, -0.08, -0.1, 0);         // bracket
+  mesh(new THREE.BoxGeometry(0.2, 0.34, 0.2), matLampGlass, L, 0, 0, 0).castShadow = false; // glass housing
+  mesh(new THREE.BoxGeometry(0.24, 0.05, 0.24), matBlack, L, 0, 0.2, 0);                    // cap
+  mesh(new THREE.CylinderGeometry(0.03, 0.05, 0.08, 8), matBlack, L, 0, 0.27, 0);           // chimney
+  mesh(new THREE.BoxGeometry(0.22, 0.05, 0.22), matBlack, L, 0, -0.2, 0);                   // base
+  const flame = mesh(new THREE.ConeGeometry(0.035, 0.12, 8), matFlame, L, 0, -0.08, 0);
+  flame.castShadow = false;
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffa040, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+  glow.scale.set(0.9, 0.9, 1); glow.position.set(0, -0.03, 0); L.add(glow);
+  const light = new THREE.PointLight(0xffa64a, 6, 9, 2);
+  light.position.set(0, -0.02, s * 0.05);
+  L.add(light);
+  lamps.push({ group: L, flame, light, glow, seed: s * 3.7 + 5 });
+}
+
+// C-springs at the rear, leaf spring hint at the front (decorative, attached to the body)
+for (const s of [-1, 1]) {
+  const c = mesh(new THREE.TorusGeometry(0.28, 0.025, 8, 24, Math.PI * 1.2), matIron, body, -CAB_L / 2 - 0.55 - 0.1, 0.42, s * (CAB_W / 2 - 0.1));
+  c.rotation.y = 0; c.rotation.z = Math.PI * 0.55;
+}
+
+// undercarriage (unsprung): axles + wheels follow the road
+const REAR_R = 0.62, FRONT_R = 0.46;
+const REAR_X = -0.95, FRONT_X = 1.45, TRACK = 0.84;
+function makeWheel(R, spokes) {
+  const g = new THREE.Group();
+  const tyre = mesh(new THREE.TorusGeometry(R - 0.03, 0.035, 10, 40), matIron, g);
+  tyre.rotation.x = 0;
+  const felloe = mesh(new THREE.TorusGeometry(R - 0.065, 0.03, 8, 40), matWood, g);
+  const hub = mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.16, 12), matGold, g);
+  hub.rotation.x = Math.PI / 2;
+  for (let i = 0; i < spokes; i++) {
+    const sp = mesh(new THREE.CylinderGeometry(0.016, 0.02, R - 0.09, 6), matWood, g);
+    const a = (i / spokes) * Math.PI * 2;
+    sp.position.set(Math.cos(a) * (R - 0.09) / 2, Math.sin(a) * (R - 0.09) / 2, 0);
+    sp.rotation.z = a - Math.PI / 2;
+  }
+  return g;
+}
+const wheels = [];
+const axles = [];
+for (const [x, R, spokes] of [[REAR_X, REAR_R, 14], [FRONT_X, FRONT_R, 12]]) {
+  const axle = new THREE.Group(); carriage.add(axle);
+  axle.position.set(x, R, 0);
+  const bar = mesh(new THREE.CylinderGeometry(0.035, 0.035, TRACK * 2 + 0.1, 10), matIron, axle);
+  bar.rotation.x = Math.PI / 2;
+  axles.push({ group: axle, x, R });
+  for (const s of [-1, 1]) {
+    const w = makeWheel(R, spokes);
+    w.position.set(0, 0, s * (TRACK + 0.02));
+    axle.add(w);
+    wheels.push({ group: w, x, z: s * TRACK, R, angle: 0 });
+  }
+}
+// perch and shafts (unsprung frame)
+const perch = mesh(new THREE.BoxGeometry(FRONT_X - REAR_X, 0.07, 0.09), matIron, carriage, (FRONT_X + REAR_X) / 2, 0.5, 0);
+for (const s of [-1, 1]) {
+  const shaft = mesh(new THREE.CylinderGeometry(0.025, 0.035, 2.4, 8), matWood, carriage, FRONT_X + 1.3, 0.78, s * 0.45);
+  shaft.rotation.z = Math.PI / 2 - 0.08;
+}
+// spring links between body and axles (visual only)
+for (const s of [-1, 1]) for (const x of [REAR_X + 0.15, FRONT_X - 0.1]) {
+  const link = mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.4, 6), matIron, body, x, 0.0, s * (CAB_W / 2 - 0.15));
+  link.userData.spring = true;
+}
+
+// ---------- suspension (sprung body on four corner springs) ----------
+const susp = { y: 0, vy: 0, pitch: 0, vp: 0, roll: 0, vr: 0 };
+const K = 38, C = 3.2, M = 1.0, I_P = 0.55, I_R = 0.32;
+const CORNERS = [
+  { x: REAR_X + 0.15, z: -TRACK * 0.9, w: 0 }, { x: REAR_X + 0.15, z: TRACK * 0.9, w: 1 },
+  { x: FRONT_X - 0.1, z: -TRACK * 0.9, w: 2 }, { x: FRONT_X - 0.1, z: TRACK * 0.9, w: 3 },
+];
+const prevGround = [0, 0, 0, 0];
+
+// ---------- state ----------
+let carX = 0;
+let travelled = 0;
+const SPEED = 2.6;                    // m/s, a brisk walk
+let simTime = 0;
+const clock = new THREE.Clock();
+const CAM_OFFSET = new THREE.Vector3(5.5, 2.4, 6.5);
+let camInit = false;
+const prevCar = new THREE.Vector3();
+
+function resetAll() {
+  carX = 0; travelled = 0;
+  Object.assign(susp, { y: 0, vy: 0, pitch: 0, vp: 0, roll: 0, vr: 0 });
+  for (const w of wheels) w.angle = 0;
+  for (const d of doors) { d.open = false; d.angle = 0; }
+  controls.target.set(0, 1.1, 0);
+  camera.position.copy(controls.target).add(CAM_OFFSET);
+  prevCar.set(0, 0, 0);
+  camInit = true;
+}
+resetAll();
+
+window.addEventListener('keydown', (e) => { if (e.code === 'KeyR') resetAll(); });
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// click (not drag) on a door toggles it
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let downPos = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { downPos = { x: e.clientX, y: e.clientY }; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!downPos) return;
+  const moved = Math.hypot(e.clientX - downPos.x, e.clientY - downPos.y);
+  downPos = null;
+  if (moved > 5) return;
+  pointer.set((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+  raycaster.setFromCamera(pointer, camera);
+  const hits = raycaster.intersectObjects(doors.flatMap(d => d.meshes), false);
+  if (hits.length) { const d = hits[0].object.userData.door; d.open = !d.open; }
+});
+
+const hudDist = document.getElementById('dist');
+const hudDoors = document.getElementById('doors');
+const hudSusp = document.getElementById('susp');
+
+function flicker(t, seed) {
+  // layered sines + a slow random-walk-free wobble: deterministic, flame-like
+  return 0.72 + 0.16 * Math.sin(t * 11.3 + seed) + 0.08 * Math.sin(t * 23.7 + seed * 1.7) + 0.06 * Math.sin(t * 5.1 + seed * 0.3) + 0.05 * Math.sin(t * 37.0 + seed * 2.9);
+}
+
+function step(dt) {
+  simTime += dt;
+  carX += SPEED * dt; travelled += SPEED * dt;
+  // keep the carriage inside the central road period: shift everything by one period (scenery is periodic)
+  if (carX > PERIOD) { carX -= PERIOD; camera.position.x -= PERIOD; controls.target.x -= PERIOD; prevCar.x -= PERIOD; }
+
+  // wheels and axles follow the road
+  const hub = [];
+  for (const w of wheels) {
+    const h = hubHeight(carX + w.x, w.z, w.R);
+    hub.push(h);
+    w.angle -= (SPEED * dt) / w.R;
+    w.group.rotation.z = w.angle;
+  }
+  for (let a = 0; a < 2; a++) {
+    const hl = hub[a * 2], hr = hub[a * 2 + 1];
+    axles[a].group.position.y = (hl + hr) / 2;
+    axles[a].group.rotation.x = Math.atan2(hl - hr, TRACK * 2);    // +z wheel lower → positive tilt
+  }
+  perch.position.y = 0.5 + (axles[0].group.position.y - REAR_R + axles[1].group.position.y - FRONT_R) / 2;
+
+  // sprung body: corner springs push against the axle height under each corner
+  let F = 0, Tp = 0, Tr = 0;
+  for (let i = 0; i < 4; i++) {
+    const c = CORNERS[i];
+    const axle = i < 2 ? axles[0] : axles[1];
+    const gs = axle.group.position.y - axle.R - Math.sin(axle.group.rotation.x) * c.z;    // ground lift under this corner
+    const gv = (gs - prevGround[i]) / Math.max(dt, 1e-4);
+    prevGround[i] = gs;
+    const disp = susp.y + c.x * susp.pitch - c.z * susp.roll - gs;      // spring compression (+ = extended)
+    const vel = susp.vy + c.x * susp.vp - c.z * susp.vr - gv;
+    const f = -K * disp - C * vel;
+    F += f; Tp += c.x * f; Tr += -c.z * f;
+  }
+  susp.vy += (F / M) * dt; susp.vp += (Tp / I_P) * dt; susp.vr += (Tr / I_R) * dt;
+  susp.y += susp.vy * dt; susp.pitch += susp.vp * dt; susp.roll += susp.vr * dt;
+  // a little body sway from the cobbles even between bumps
+  body.position.y = BODY_REST + susp.y;
+  body.rotation.z = susp.pitch;
+  body.rotation.x = susp.roll;
+
+  // doors
+  for (const d of doors) {
+    const target = d.open ? d.side * 1.25 : 0;
+    d.angle += (target - d.angle) * (1 - Math.exp(-dt * 6));
+    d.hinge.rotation.y = d.angle;
+  }
+
+  // lamps
+  for (const l of lamps) {
+    const f = flicker(simTime, l.seed);
+    l.light.intensity = 7 * f;
+    l.flame.scale.set(0.8 + f * 0.4, 0.6 + f * 0.8, 0.8 + f * 0.4);
+    l.flame.position.x = 0.01 * Math.sin(simTime * 17 + l.seed);
+    l.glow.material.opacity = 0.35 + 0.35 * f;
+    l.glow.scale.setScalar(0.7 + 0.5 * f);
+    l.light.position.y = -0.02 + 0.03 * (f - 0.8);
+  }
+
+  carriage.position.x = carX;
+  // moonlight follows so the shadow stays crisp
+  moon.position.set(carX - 12, 22, 10); moon.target.position.set(carX, 0, 0); moon.target.updateMatrixWorld();
+
+  // camera follows: keep the user's orbit offset
+  const carPos = new THREE.Vector3(carX, 0, 0);
+  const delta = carPos.clone().sub(prevCar);
+  camera.position.add(delta);
+  controls.target.add(delta);
+  prevCar.copy(carPos);
+
+  hudDist.textContent = travelled.toFixed(0);
+  hudSusp.textContent = `${(susp.y * 100).toFixed(1)} cm, ${(susp.pitch * 57.3).toFixed(1)}°`;
+  hudDoors.textContent = `${doors[0].open ? 'open' : 'closed'} / ${doors[1].open ? 'open' : 'closed'}`;
+}
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  // sub-step the suspension so it stays stable at any frame rate
+  const n = Math.max(1, Math.ceil(dt / 0.01));
+  for (let i = 0; i < n; i++) step(dt / n);
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
