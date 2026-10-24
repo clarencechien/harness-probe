@@ -30,7 +30,6 @@ Drag to orbit · wheel to zoom · <b>Space</b> pause/resume <span id="paused"></
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Water } from 'three/addons/objects/Water.js';
-import { Sky } from 'three/addons/objects/Sky.js';
 
 // ---------- renderer / scene / camera ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -39,12 +38,12 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 0.55;
+renderer.toneMappingExposure = 0.75;
 document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.5, 20000);
-camera.position.set(-40, 12, 30);
+camera.position.set(-60, 8, 18);   // behind-left of the taxiing plane, looking into the sun
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -55,31 +54,56 @@ controls.maxDistance = 400;
 
 // ---------- sun / sky ----------
 const sun = new THREE.Vector3();
-const sunElevation = 9;      // degrees above horizon: golden hour
-const sunAzimuth = 150;
+const sunElevation = 12;     // degrees above horizon: late golden hour, low enough to be warm, high enough that the shadow reads
+const sunAzimuth = 104;      // ahead of the take-off run (+x), slightly to the left so it sits in frame
 {
   const phi = THREE.MathUtils.degToRad(90 - sunElevation);
   const theta = THREE.MathUtils.degToRad(sunAzimuth);
   sun.setFromSphericalCoords(1, phi, theta);
 }
 
-const sky = new Sky();
-sky.scale.setScalar(10000);
-const skyU = sky.material.uniforms;
-skyU.turbidity.value = 8;
-skyU.rayleigh.value = 2.5;
-skyU.mieCoefficient.value = 0.006;
-skyU.mieDirectionalG.value = 0.85;
-skyU.sunPosition.value.copy(sun);
+// Golden-hour sky dome: a gradient shader with a sun disk and warm glow.
+// (The Sky addon's physical model goes pale grey at 10-15 degrees elevation; this gives
+// direct control over the colour.)
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(6000, 48, 24),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    uniforms: { sunDir: { value: sun.clone().normalize() } },
+    vertexShader: `
+      varying vec3 vDir;
+      void main() { vDir = normalize(position); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform vec3 sunDir; varying vec3 vDir;
+      void main() {
+        vec3 d = normalize(vDir);
+        float h = clamp(d.y, -0.2, 1.0);
+        vec3 zenith  = vec3(0.16, 0.30, 0.58);
+        vec3 mid     = vec3(0.72, 0.52, 0.42);
+        vec3 horizon = vec3(1.00, 0.62, 0.30);
+        vec3 col = mix(horizon, mid, smoothstep(0.0, 0.12, h));
+        col = mix(col, zenith, smoothstep(0.08, 0.6, h));
+        float sd = max(dot(d, sunDir), 0.0);
+        // wide warm haze around the sun, stronger near the horizon
+        col += vec3(1.0, 0.55, 0.22) * pow(sd, 6.0) * 0.45 * (1.0 - smoothstep(0.0, 0.5, h));
+        col += vec3(1.0, 0.75, 0.45) * pow(sd, 90.0) * 0.9;
+        col += vec3(1.0, 0.92, 0.75) * smoothstep(0.9992, 0.9996, sd) * 1.4;   // sun disk
+        col = mix(vec3(0.05, 0.08, 0.12), col, smoothstep(-0.2, 0.0, d.y));    // below the horizon
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  })
+);
+sky.frustumCulled = false;
 
 const pmrem = new THREE.PMREMGenerator(renderer);
 const envScene = new THREE.Scene();
 envScene.add(sky);
 scene.environment = pmrem.fromScene(envScene).texture;
+scene.environmentIntensity = 0.7;
 scene.add(sky);
 
 // ---------- lights ----------
-const sunLight = new THREE.DirectionalLight(0xffc27a, 3.0);
+const sunLight = new THREE.DirectionalLight(0xffa858, 3.4);
 sunLight.castShadow = true;
 sunLight.shadow.mapSize.set(2048, 2048);
 sunLight.shadow.camera.near = 1;
@@ -93,7 +117,7 @@ sunLight.shadow.normalBias = 0.05;
 scene.add(sunLight);
 scene.add(sunLight.target);
 
-const hemi = new THREE.HemisphereLight(0xffb070, 0x1b2a3a, 0.5);
+const hemi = new THREE.HemisphereLight(0xff9a55, 0x18283a, 0.6);
 scene.add(hemi);
 
 // ---------- procedural water normal map ----------
@@ -114,7 +138,7 @@ function makeWaterNormals(size = 256) {
       const x = i / size, y = j / size;
       const dx = (h(x + e, y) - h(x - e, y)) / (2 * e);
       const dy = (h(x, y + e) - h(x, y - e)) / (2 * e);
-      const n = new THREE.Vector3(-dx * 0.02, -dy * 0.02, 1).normalize();
+      const n = new THREE.Vector3(-dx * 0.06, -dy * 0.06, 1).normalize();
       const k = (j * size + i) * 4;
       data[k] = (n.x * 0.5 + 0.5) * 255;
       data[k + 1] = (n.y * 0.5 + 0.5) * 255;
@@ -124,6 +148,9 @@ function makeWaterNormals(size = 256) {
   }
   const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.generateMipmaps = true;
   tex.needsUpdate = true;
   return tex;
 }
@@ -136,12 +163,13 @@ const water = new Water(waterGeo, {
   textureHeight: 512,
   waterNormals: makeWaterNormals(),
   sunDirection: sun.clone().normalize(),
-  sunColor: 0xffb060,
-  waterColor: 0x0a2a3a,
-  distortionScale: 2.4,
+  sunColor: 0xffa050,
+  waterColor: 0x0a1f30,
+  distortionScale: 3.0,
   fog: false,
 });
 water.rotation.x = -Math.PI / 2;
+water.material.uniforms.size.value = 3.0;
 scene.add(water);
 const waterPos = waterGeo.attributes.position;
 const waterBase = waterPos.array.slice();
@@ -150,7 +178,7 @@ const waterBase = waterPos.array.slice();
 // ShadowMaterial plane sits just above the surface and only draws the plane's shadow.
 const shadowCatcher = new THREE.Mesh(
   new THREE.PlaneGeometry(WATER_SIZE, WATER_SIZE),
-  new THREE.ShadowMaterial({ color: 0x031018, opacity: 0.55, transparent: true })
+  new THREE.ShadowMaterial({ color: 0x02080f, opacity: 0.42, transparent: true })
 );
 shadowCatcher.rotation.x = -Math.PI / 2;
 shadowCatcher.position.y = 0.45;
@@ -311,8 +339,19 @@ const sprayLife = new Float32Array(SPRAY_N);
 for (let i = 0; i < SPRAY_N; i++) sprayPos[i * 3 + 1] = -500;
 const sprayGeo = new THREE.BufferGeometry();
 sprayGeo.setAttribute('position', new THREE.BufferAttribute(sprayPos, 3));
+function makeSpraySprite() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.35, 'rgba(255,255,255,0.7)');
+  grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
 const spray = new THREE.Points(sprayGeo, new THREE.PointsMaterial({
-  color: 0xfff4e0, size: 0.55, transparent: true, opacity: 0.85, depthWrite: false, sizeAttenuation: true,
+  color: 0xfff4e0, size: 1.6, map: makeSpraySprite(), transparent: true, opacity: 0.75,
+  depthWrite: false, sizeAttenuation: true, alphaTest: 0.02,
 }));
 spray.frustumCulled = false;
 scene.add(spray);
@@ -335,11 +374,21 @@ class Wake {
     geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(this.col, 3));
     this.geo = geo;
-    this.mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-      vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    this.mesh = new THREE.Mesh(geo, new THREE.ShaderMaterial({
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      vertexShader: `
+        attribute vec3 color; varying float vA; varying vec2 vUv2;
+        void main() { vA = color.r; vUv2 = vec2(color.g, color.b); gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        varying float vA; varying vec2 vUv2;
+        void main() {
+          float edge = 1.0 - smoothstep(0.55, 1.0, abs(vUv2.x));          // soft ribbon edges
+          float streak = 0.8 + 0.2 * sin(vUv2.y * 0.9 + vUv2.x * 2.5);     // slow foam streaks
+          gl_FragColor = vec4(vec3(0.93, 0.95, 0.97), 0.7 * vA * edge * streak);
+        }`,
     }));
     this.mesh.frustumCulled = false;
-    this.mesh.position.y = 0.2;
+    this.mesh.position.y = 0.75;
     scene.add(this.mesh);
     this.lastSample = -1;
   }
@@ -355,15 +404,15 @@ class Wake {
     for (let i = 0; i < n; i++) {
       const s = this.samples[i];
       const age = t - s.t;
-      const w = 0.5 + age * 1.1 + s.speed * 0.02;
+      const w = 0.9 + age * 1.0 + s.speed * 0.04;
       const k = 1 - age / WAKE_MAX_AGE;
       const a = k * k * Math.min(1, s.speed / 12);
       const nx = -s.dirz, nz = s.dirx;
       const o = i * 6;
       pos[o] = s.x + nx * w; pos[o + 1] = 0; pos[o + 2] = s.z + nz * w;
       pos[o + 3] = s.x - nx * w; pos[o + 4] = 0; pos[o + 5] = s.z - nz * w;
-      col[o] = col[o + 1] = col[o + 2] = a * 0.9;
-      col[o + 3] = col[o + 4] = col[o + 5] = a * 0.9;
+      col[o] = a; col[o + 1] = 1; col[o + 2] = i;      // alpha, lateral uv, along uv
+      col[o + 3] = a; col[o + 4] = -1; col[o + 5] = i;
     }
     // collapse unused vertices onto the last sample so the index buffer stays valid
     for (let i = n; i < WAKE_N; i++) {
@@ -417,12 +466,14 @@ function updateWaterGeometry(t) {
 }
 
 function emitSpray(origin, back, side, speed, dt) {
-  const count = Math.min(40, Math.floor(speed * dt * 1.6));
+  const count = Math.min(80, Math.ceil(speed * dt * 2.4));
+  const travel = speed * dt;   // spread the burst along the distance covered this frame
   for (let c = 0; c < count; c++) {
     const i = sprayHead; sprayHead = (sprayHead + 1) % SPRAY_N;
-    sprayPos[i * 3] = origin.x + side.x * (Math.random() - 0.5) * 0.8;
-    sprayPos[i * 3 + 1] = 0.2;
-    sprayPos[i * 3 + 2] = origin.z + side.z * (Math.random() - 0.5) * 0.8;
+    const along = Math.random() * travel;
+    sprayPos[i * 3] = origin.x + side.x * (Math.random() - 0.5) * 0.8 + back.x * along;
+    sprayPos[i * 3 + 1] = 0.5;
+    sprayPos[i * 3 + 2] = origin.z + side.z * (Math.random() - 0.5) * 0.8 + back.z * along;
     const up = 1.5 + Math.random() * speed * 0.18;
     const lat = (Math.random() - 0.5) * speed * 0.12;
     const bk = speed * (0.15 + Math.random() * 0.2);
@@ -441,7 +492,7 @@ function updateSpray(dt) {
     sprayPos[i * 3] += sprayVel[i * 3] * dt;
     sprayPos[i * 3 + 1] += sprayVel[i * 3 + 1] * dt;
     sprayPos[i * 3 + 2] += sprayVel[i * 3 + 2] * dt;
-    if (sprayLife[i] <= 0 || sprayPos[i * 3 + 1] < 0) { sprayLife[i] = 0; sprayPos[i * 3 + 1] = -500; }
+    if (sprayLife[i] <= 0 || sprayPos[i * 3 + 1] < -0.5) { sprayLife[i] = 0; sprayPos[i * 3 + 1] = -500; }
   }
   sprayGeo.attributes.position.needsUpdate = true;
 }
@@ -515,7 +566,7 @@ function step(dt) {
 }
 
 renderer.setAnimationLoop(() => {
-  const dt = Math.min(clock.getDelta(), 0.05);
+  const dt = Math.min(clock.getDelta(), 0.1);
   if (!paused) step(dt);
   controls.update();
   renderer.render(scene, camera);
