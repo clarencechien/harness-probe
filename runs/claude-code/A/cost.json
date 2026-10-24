@@ -1,6 +1,6 @@
 {
   "surface": "claude-code",
-  "model": "claude-fable-5-1 (session-configured; serving model may differ)",
+  "model": "claude-fable-5-1 (confirmed via session metadata: configured and last-served)",
   "task": "A",
   "date": "2026-10-24",
   "turns": 0,
