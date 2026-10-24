@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Seaplane takeoff — golden hour</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #000; }
+  canvas { display: block; }
+  #hud {
+    position: fixed; left: 12px; top: 12px; padding: 8px 12px; border-radius: 6px;
+    font: 13px/1.5 system-ui, sans-serif; color: #fff2d6; background: rgba(0,0,0,.35);
+    pointer-events: none; user-select: none;
+  }
+  #hud b { color: #ffd27a; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hud">Phase: <b id="phase">taxi</b> &nbsp;|&nbsp; Speed: <b id="speed">0</b> m/s &nbsp;|&nbsp; Alt: <b id="alt">0</b> m<br>
+Drag to orbit · wheel to zoom · <b>Space</b> pause/resume <span id="paused"></span></div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Water } from 'three/addons/objects/Water.js';
+import { Sky } from 'three/addons/objects/Sky.js';
+
+// ---------- renderer / scene / camera ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.55;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.5, 20000);
+camera.position.set(-40, 12, 30);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.08;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.minDistance = 8;
+controls.maxDistance = 400;
+
+// ---------- sun / sky ----------
+const sun = new THREE.Vector3();
+const sunElevation = 9;      // degrees above horizon: golden hour
+const sunAzimuth = 150;
+{
+  const phi = THREE.MathUtils.degToRad(90 - sunElevation);
+  const theta = THREE.MathUtils.degToRad(sunAzimuth);
+  sun.setFromSphericalCoords(1, phi, theta);
+}
+
+const sky = new Sky();
+sky.scale.setScalar(10000);
+const skyU = sky.material.uniforms;
+skyU.turbidity.value = 8;
+skyU.rayleigh.value = 2.5;
+skyU.mieCoefficient.value = 0.006;
+skyU.mieDirectionalG.value = 0.85;
+skyU.sunPosition.value.copy(sun);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envScene = new THREE.Scene();
+envScene.add(sky);
+scene.environment = pmrem.fromScene(envScene).texture;
+scene.add(sky);
+
+// ---------- lights ----------
+const sunLight = new THREE.DirectionalLight(0xffc27a, 3.0);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.near = 1;
+sunLight.shadow.camera.far = 900;
+sunLight.shadow.camera.left = -45;
+sunLight.shadow.camera.right = 45;
+sunLight.shadow.camera.top = 45;
+sunLight.shadow.camera.bottom = -45;
+sunLight.shadow.bias = -0.0005;
+sunLight.shadow.normalBias = 0.05;
+scene.add(sunLight);
+scene.add(sunLight.target);
+
+const hemi = new THREE.HemisphereLight(0xffb070, 0x1b2a3a, 0.5);
+scene.add(hemi);
+
+// ---------- procedural water normal map ----------
+function makeWaterNormals(size = 256) {
+  const data = new Uint8Array(size * size * 4);
+  const waves = [
+    [3, 2, 0.9, 0.0], [5, -4, 0.6, 1.3], [-7, 6, 0.4, 2.1], [11, 9, 0.25, 0.4],
+    [2, -9, 0.35, 3.0], [13, -3, 0.18, 1.7], [-17, 12, 0.12, 0.9],
+  ];
+  const h = (x, y) => {
+    let v = 0;
+    for (const [fx, fy, a, p] of waves) v += a * Math.sin(2 * Math.PI * (fx * x + fy * y) + p);
+    return v;
+  };
+  const e = 1 / size;
+  for (let j = 0; j < size; j++) {
+    for (let i = 0; i < size; i++) {
+      const x = i / size, y = j / size;
+      const dx = (h(x + e, y) - h(x - e, y)) / (2 * e);
+      const dy = (h(x, y + e) - h(x, y - e)) / (2 * e);
+      const n = new THREE.Vector3(-dx * 0.02, -dy * 0.02, 1).normalize();
+      const k = (j * size + i) * 4;
+      data[k] = (n.x * 0.5 + 0.5) * 255;
+      data[k + 1] = (n.y * 0.5 + 0.5) * 255;
+      data[k + 2] = (n.z * 0.5 + 0.5) * 255;
+      data[k + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// ---------- water ----------
+const WATER_SIZE = 4000, WATER_SEG = 160;
+const waterGeo = new THREE.PlaneGeometry(WATER_SIZE, WATER_SIZE, WATER_SEG, WATER_SEG);
+const water = new Water(waterGeo, {
+  textureWidth: 512,
+  textureHeight: 512,
+  waterNormals: makeWaterNormals(),
+  sunDirection: sun.clone().normalize(),
+  sunColor: 0xffb060,
+  waterColor: 0x0a2a3a,
+  distortionScale: 2.4,
+  fog: false,
+});
+water.rotation.x = -Math.PI / 2;
+scene.add(water);
+const waterPos = waterGeo.attributes.position;
+const waterBase = waterPos.array.slice();
+
+// Shadow catcher: Water's shader cannot receive shadows, so a transparent
+// ShadowMaterial plane sits just above the surface and only draws the plane's shadow.
+const shadowCatcher = new THREE.Mesh(
+  new THREE.PlaneGeometry(WATER_SIZE, WATER_SIZE),
+  new THREE.ShadowMaterial({ color: 0x031018, opacity: 0.55, transparent: true })
+);
+shadowCatcher.rotation.x = -Math.PI / 2;
+shadowCatcher.position.y = 0.45;
+shadowCatcher.receiveShadow = true;
+scene.add(shadowCatcher);
+
+// ---------- seaplane (primitives only) ----------
+const plane = new THREE.Group();
+plane.rotation.order = 'YXZ';
+scene.add(plane);
+
+const matBody = new THREE.MeshStandardMaterial({ color: 0xf2d35a, metalness: 0.25, roughness: 0.45 });
+const matDark = new THREE.MeshStandardMaterial({ color: 0x1d2b3a, metalness: 0.3, roughness: 0.5 });
+const matRed = new THREE.MeshStandardMaterial({ color: 0xc23a2a, metalness: 0.2, roughness: 0.5 });
+const matMetal = new THREE.MeshStandardMaterial({ color: 0xb8bcc2, metalness: 0.9, roughness: 0.3 });
+const matGlass = new THREE.MeshStandardMaterial({ color: 0x6fb6d8, metalness: 0.8, roughness: 0.1, transparent: true, opacity: 0.7 });
+
+function addMesh(geo, mat, parent = plane) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+// fuselage: forward is -Z
+const fuselage = addMesh(new THREE.CapsuleGeometry(0.75, 7.0, 8, 24), matBody);
+fuselage.rotation.x = Math.PI / 2;
+const nose = addMesh(new THREE.ConeGeometry(0.75, 1.2, 24), matDark);
+nose.rotation.x = -Math.PI / 2; nose.position.z = -4.6;
+const cabin = addMesh(new THREE.BoxGeometry(1.3, 0.8, 2.4), matGlass);
+cabin.position.set(0, 0.75, -1.8);
+
+// wing (high wing)
+const wing = addMesh(new THREE.BoxGeometry(13.0, 0.22, 1.9), matBody);
+wing.position.set(0, 1.25, -1.2);
+const wingTipL = addMesh(new THREE.BoxGeometry(0.9, 0.24, 1.9), matRed); wingTipL.position.set(-6.1, 1.25, -1.2);
+const wingTipR = addMesh(new THREE.BoxGeometry(0.9, 0.24, 1.9), matRed); wingTipR.position.set(6.1, 1.25, -1.2);
+// wing struts
+for (const s of [-1, 1]) {
+  const strut = addMesh(new THREE.CylinderGeometry(0.06, 0.06, 3.0, 8), matMetal);
+  strut.position.set(s * 2.6, 0.2, -1.2);
+  strut.rotation.z = s * 0.95;
+}
+
+// tail
+const hStab = addMesh(new THREE.BoxGeometry(4.2, 0.15, 1.2), matBody); hStab.position.set(0, 0.35, 3.9);
+const vFin = addMesh(new THREE.BoxGeometry(0.15, 1.9, 1.5), matRed); vFin.position.set(0, 1.2, 4.0);
+
+// floats
+const floats = [];
+for (const s of [-1, 1]) {
+  const f = addMesh(new THREE.CapsuleGeometry(0.42, 6.2, 6, 16), matMetal);
+  f.rotation.x = Math.PI / 2;
+  f.position.set(s * 1.7, -2.05, -0.3);
+  floats.push(f);
+  for (const z of [-1.6, 1.4]) {
+    const st = addMesh(new THREE.CylinderGeometry(0.07, 0.07, 1.7, 8), matMetal);
+    st.position.set(s * 1.3, -1.15, z);
+    st.rotation.z = s * 0.3;
+  }
+  const bar = addMesh(new THREE.CylinderGeometry(0.06, 0.06, 3.4, 8), matMetal);
+  bar.position.set(0, -1.75, -1.6 + (s + 1) * 1.5);
+  bar.rotation.z = Math.PI / 2;
+}
+const FLOAT_BOTTOM = 2.05 + 0.42; // distance from group origin down to float keel
+
+// propeller
+const prop = new THREE.Group();
+prop.position.set(0, 0, -5.25);
+plane.add(prop);
+const spinner = addMesh(new THREE.ConeGeometry(0.28, 0.6, 16), matMetal, prop);
+spinner.rotation.x = -Math.PI / 2; spinner.position.z = -0.2;
+for (let i = 0; i < 2; i++) {
+  const blade = addMesh(new THREE.BoxGeometry(0.16, 2.7, 0.06), matDark, prop);
+  blade.rotation.z = i * Math.PI;
+  blade.rotation.y = 0.35;
+}
+const propDisc = new THREE.Mesh(new THREE.CircleGeometry(1.35, 32),
+  new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.0, side: THREE.DoubleSide, depthWrite: false }));
+prop.add(propDisc);
+
+// ---------- flight path: a closed oval (takeoff straight + two half-circles + return straight) ----------
+const L = 130;    // half length of straights
+const R = 170;    // radius of the turns
+const SEG_A = 2 * L, SEG_C = Math.PI * R;
+const TOTAL = 2 * SEG_A + 2 * SEG_C;
+const CRUISE_ALT = 48;
+
+const sm = (a, b, x) => THREE.MathUtils.smoothstep(x, a, b);
+
+function pathPoint(s, out, tangent) {
+  s = ((s % TOTAL) + TOTAL) % TOTAL;
+  if (s < SEG_A) {                                      // straight A, +x
+    out.set(-L + s, 0, 0); tangent.set(1, 0, 0);
+  } else if (s < SEG_A + SEG_C) {                       // half circle 1 (left turn)
+    const a = Math.PI / 2 - (s - SEG_A) / R;
+    out.set(L + R * Math.cos(a), 0, -R + R * Math.sin(a));
+    tangent.set(Math.sin(a), 0, -Math.cos(a));
+  } else if (s < 2 * SEG_A + SEG_C) {                   // straight B, -x
+    const t = s - SEG_A - SEG_C;
+    out.set(L - t, 0, -2 * R); tangent.set(-1, 0, 0);
+  } else {                                              // half circle 2
+    const a = -Math.PI / 2 - (s - 2 * SEG_A - SEG_C) / R;
+    out.set(-L + R * Math.cos(a), 0, -R + R * Math.sin(a));
+    tangent.set(Math.sin(a), 0, -Math.cos(a));
+  }
+}
+
+// Phase profile as a function of distance along the loop.
+function profile(s) {
+  s = ((s % TOTAL) + TOTAL) % TOTAL;
+  const p = { phase: 'taxi', speed: 7, alt: 0, pitch: 0, roll: 0, onWater: true, propRate: 25, camDist: 24, camHeight: 6 };
+  if (s < SEG_A) {
+    const f = s / SEG_A;
+    if (f < 0.08) {           // touchdown / flare
+      p.phase = 'landing'; p.alt = 2.2 * (1 - sm(0, 0.08, f)); p.pitch = 0.09 * (1 - sm(0.02, 0.08, f));
+      p.speed = 38; p.onWater = f > 0.015; p.propRate = 35; p.camDist = 30; p.camHeight = 7;
+    } else if (f < 0.34) {    // rollout, decelerate
+      p.phase = 'landing'; p.speed = THREE.MathUtils.lerp(38, 7, sm(0.08, 0.34, f)); p.propRate = 28; p.camDist = 26; p.camHeight = 6;
+    } else if (f < 0.52) {    // taxi
+      p.phase = 'taxi'; p.speed = 7; p.propRate = 22; p.camDist = 22; p.camHeight = 5;
+    } else if (f < 0.9) {     // takeoff run
+      p.phase = 'accelerate'; p.speed = THREE.MathUtils.lerp(7, 46, sm(0.52, 0.9, f)); p.propRate = 90;
+      p.pitch = 0.04 * sm(0.75, 0.9, f); p.camDist = 30; p.camHeight = 7;
+    } else {                  // rotate & lift off
+      p.phase = 'lift-off'; p.speed = 48; p.propRate = 95; p.alt = 6 * sm(0.9, 1.0, f);
+      p.pitch = 0.04 + 0.16 * sm(0.9, 0.97, f); p.onWater = f < 0.94; p.camDist = 36; p.camHeight = 9;
+    }
+  } else if (s < SEG_A + SEG_C) {
+    const f = (s - SEG_A) / SEG_C;
+    p.phase = 'climb'; p.onWater = false; p.speed = 52; p.propRate = 95;
+    p.alt = THREE.MathUtils.lerp(6, CRUISE_ALT, sm(0, 0.8, f));
+    p.pitch = 0.2 * (1 - sm(0.6, 1.0, f)) + 0.02;
+    p.roll = 0.55 * sm(0, 0.25, f) * (1 - sm(0.75, 1.0, f));
+    p.camDist = 48; p.camHeight = 10;
+  } else if (s < 2 * SEG_A + SEG_C) {
+    const f = (s - SEG_A - SEG_C) / SEG_A;
+    p.phase = f < 0.5 ? 'cruise' : 'descend'; p.onWater = false; p.speed = 55; p.propRate = f < 0.5 ? 85 : 55;
+    p.alt = THREE.MathUtils.lerp(CRUISE_ALT, 34, sm(0.45, 1.0, f));
+    p.pitch = 0.02 - 0.08 * sm(0.45, 0.7, f);
+    p.camDist = 62; p.camHeight = 12;
+  } else {
+    const f = (s - 2 * SEG_A - SEG_C) / SEG_C;
+    p.phase = 'descend'; p.onWater = false; p.speed = THREE.MathUtils.lerp(50, 40, f); p.propRate = 50;
+    p.alt = THREE.MathUtils.lerp(34, 2.2, sm(0, 0.95, f));
+    p.pitch = -0.06 + 0.1 * sm(0.85, 1.0, f);
+    p.roll = 0.55 * sm(0, 0.25, f) * (1 - sm(0.75, 1.0, f));
+    p.camDist = 44; p.camHeight = 9;
+  }
+  return p;
+}
+
+// ---------- spray particles ----------
+const SPRAY_N = 1200;
+const sprayPos = new Float32Array(SPRAY_N * 3);
+const sprayVel = new Float32Array(SPRAY_N * 3);
+const sprayLife = new Float32Array(SPRAY_N);
+for (let i = 0; i < SPRAY_N; i++) sprayPos[i * 3 + 1] = -500;
+const sprayGeo = new THREE.BufferGeometry();
+sprayGeo.setAttribute('position', new THREE.BufferAttribute(sprayPos, 3));
+const spray = new THREE.Points(sprayGeo, new THREE.PointsMaterial({
+  color: 0xfff4e0, size: 0.55, transparent: true, opacity: 0.85, depthWrite: false, sizeAttenuation: true,
+}));
+spray.frustumCulled = false;
+scene.add(spray);
+let sprayHead = 0;
+
+// ---------- foam wake ribbons (one per float) ----------
+const WAKE_N = 90, WAKE_MAX_AGE = 6.0;
+class Wake {
+  constructor() {
+    this.samples = []; // {x, z, t, dirx, dirz}
+    const geo = new THREE.BufferGeometry();
+    this.pos = new Float32Array(WAKE_N * 2 * 3);
+    this.col = new Float32Array(WAKE_N * 2 * 3);
+    const idx = [];
+    for (let i = 0; i < WAKE_N - 1; i++) {
+      const a = i * 2;
+      idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+    }
+    geo.setIndex(idx);
+    geo.setAttribute('position', new THREE.BufferAttribute(this.pos, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(this.col, 3));
+    this.geo = geo;
+    this.mesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+      vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+    }));
+    this.mesh.frustumCulled = false;
+    this.mesh.position.y = 0.2;
+    scene.add(this.mesh);
+    this.lastSample = -1;
+  }
+  push(x, z, dirx, dirz, t, speed) {
+    this.samples.push({ x, z, t, dirx, dirz, speed });
+    if (this.samples.length > WAKE_N) this.samples.shift();
+  }
+  update(t) {
+    while (this.samples.length && t - this.samples[0].t > WAKE_MAX_AGE) this.samples.shift();
+    const n = this.samples.length;
+    const pos = this.pos, col = this.col;
+    pos.fill(0); col.fill(0);
+    for (let i = 0; i < n; i++) {
+      const s = this.samples[i];
+      const age = t - s.t;
+      const w = 0.5 + age * 1.1 + s.speed * 0.02;
+      const k = 1 - age / WAKE_MAX_AGE;
+      const a = k * k * Math.min(1, s.speed / 12);
+      const nx = -s.dirz, nz = s.dirx;
+      const o = i * 6;
+      pos[o] = s.x + nx * w; pos[o + 1] = 0; pos[o + 2] = s.z + nz * w;
+      pos[o + 3] = s.x - nx * w; pos[o + 4] = 0; pos[o + 5] = s.z - nz * w;
+      col[o] = col[o + 1] = col[o + 2] = a * 0.9;
+      col[o + 3] = col[o + 4] = col[o + 5] = a * 0.9;
+    }
+    // collapse unused vertices onto the last sample so the index buffer stays valid
+    for (let i = n; i < WAKE_N; i++) {
+      const o = i * 6, src = Math.max(0, n - 1) * 6;
+      for (let j = 0; j < 6; j++) pos[o + j] = pos[src + j];
+    }
+    this.geo.attributes.position.needsUpdate = true;
+    this.geo.attributes.color.needsUpdate = true;
+    this.mesh.visible = n > 1;
+  }
+}
+const wakes = [new Wake(), new Wake()];
+
+// ---------- state ----------
+let paused = false;
+let dist = SEG_A * 0.36;   // start in the taxi phase
+let simTime = 0;
+const clock = new THREE.Clock();
+const tmpPos = new THREE.Vector3(), tmpTan = new THREE.Vector3();
+const prevPlanePos = new THREE.Vector3();
+let havePrev = false;
+let camDistCur = 24;
+const floatWorld = new THREE.Vector3();
+const floatDir = new THREE.Vector3();
+
+const hudPhase = document.getElementById('phase');
+const hudSpeed = document.getElementById('speed');
+const hudAlt = document.getElementById('alt');
+const hudPaused = document.getElementById('paused');
+
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') {
+    e.preventDefault();
+    paused = !paused;
+    hudPaused.textContent = paused ? '— PAUSED' : '';
+  }
+});
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function updateWaterGeometry(t) {
+  const arr = waterPos.array;
+  for (let i = 0; i < waterPos.count; i++) {
+    const x = waterBase[i * 3], y = waterBase[i * 3 + 1];
+    arr[i * 3 + 2] = 0.28 * Math.sin(0.045 * x + t * 0.9) + 0.18 * Math.sin(0.07 * y - t * 0.7) + 0.1 * Math.sin(0.03 * (x + y) + t * 0.5);
+  }
+  waterPos.needsUpdate = true;
+}
+
+function emitSpray(origin, back, side, speed, dt) {
+  const count = Math.min(40, Math.floor(speed * dt * 1.6));
+  for (let c = 0; c < count; c++) {
+    const i = sprayHead; sprayHead = (sprayHead + 1) % SPRAY_N;
+    sprayPos[i * 3] = origin.x + side.x * (Math.random() - 0.5) * 0.8;
+    sprayPos[i * 3 + 1] = 0.2;
+    sprayPos[i * 3 + 2] = origin.z + side.z * (Math.random() - 0.5) * 0.8;
+    const up = 1.5 + Math.random() * speed * 0.18;
+    const lat = (Math.random() - 0.5) * speed * 0.12;
+    const bk = speed * (0.15 + Math.random() * 0.2);
+    sprayVel[i * 3] = back.x * bk + side.x * lat;
+    sprayVel[i * 3 + 1] = up;
+    sprayVel[i * 3 + 2] = back.z * bk + side.z * lat;
+    sprayLife[i] = 0.6 + Math.random() * 0.8;
+  }
+}
+
+function updateSpray(dt) {
+  for (let i = 0; i < SPRAY_N; i++) {
+    if (sprayLife[i] <= 0) continue;
+    sprayLife[i] -= dt;
+    sprayVel[i * 3 + 1] -= 9.8 * dt;
+    sprayPos[i * 3] += sprayVel[i * 3] * dt;
+    sprayPos[i * 3 + 1] += sprayVel[i * 3 + 1] * dt;
+    sprayPos[i * 3 + 2] += sprayVel[i * 3 + 2] * dt;
+    if (sprayLife[i] <= 0 || sprayPos[i * 3 + 1] < 0) { sprayLife[i] = 0; sprayPos[i * 3 + 1] = -500; }
+  }
+  sprayGeo.attributes.position.needsUpdate = true;
+}
+
+function step(dt) {
+  simTime += dt;
+  const p = profile(dist);
+  dist += p.speed * dt;
+  pathPoint(dist, tmpPos, tmpTan);
+
+  // bobbing on the water
+  let bob = 0;
+  if (p.onWater) bob = 0.12 * Math.sin(simTime * 2.1) + 0.06 * Math.sin(simTime * 3.7 + 1);
+  plane.position.set(tmpPos.x, FLOAT_BOTTOM + p.alt + bob, tmpPos.z);
+  const heading = Math.atan2(-tmpTan.x, -tmpTan.z);
+  plane.rotation.y = heading;
+  plane.rotation.x = p.pitch + (p.onWater ? 0.015 * Math.sin(simTime * 1.7) : 0);
+  plane.rotation.z = p.roll + (p.onWater ? 0.01 * Math.sin(simTime * 2.3) : 0);
+
+  // propeller
+  prop.rotation.z += p.propRate * dt;
+  propDisc.material.opacity = THREE.MathUtils.clamp((p.propRate - 30) / 70, 0, 0.35);
+
+  // wake & spray only while the floats are in the water
+  const back = tmpTan.clone().multiplyScalar(-1);
+  const side = new THREE.Vector3(-tmpTan.z, 0, tmpTan.x);
+  for (let k = 0; k < 2; k++) {
+    if (p.onWater) {
+      floats[k].getWorldPosition(floatWorld);
+      floatDir.copy(back).multiplyScalar(2.8);
+      const x = floatWorld.x + floatDir.x, z = floatWorld.z + floatDir.z;
+      wakes[k].push(x, z, tmpTan.x, tmpTan.z, simTime, p.speed);
+      if (p.speed > 4) emitSpray(new THREE.Vector3(x, 0, z), back, side, p.speed, dt);
+    }
+    wakes[k].update(simTime);
+  }
+  updateSpray(dt);
+
+  // water surface animation
+  water.material.uniforms.time.value += dt * 0.6;
+  updateWaterGeometry(simTime);
+
+  // sun light follows the plane so the shadow map stays sharp
+  sunLight.position.copy(plane.position).addScaledVector(sun, 160);
+  sunLight.target.position.copy(plane.position);
+  sunLight.target.updateMatrixWorld();
+
+  // camera: keep the user's orbit offset, follow the plane, ease distance per phase
+  if (havePrev) {
+    const delta = plane.position.clone().sub(prevPlanePos);
+    camera.position.add(delta);
+  }
+  controls.target.copy(plane.position);
+  prevPlanePos.copy(plane.position);
+  havePrev = true;
+  camDistCur = THREE.MathUtils.lerp(camDistCur, p.camDist, 1 - Math.exp(-dt * 0.8));
+  const off = camera.position.clone().sub(controls.target);
+  const len = off.length();
+  if (len > 0.01) {
+    off.multiplyScalar(camDistCur / len);
+    const targetY = Math.max(off.y, p.camHeight * 0.6);
+    off.y = THREE.MathUtils.lerp(off.y, targetY, 1 - Math.exp(-dt * 0.5));
+    camera.position.copy(controls.target).add(off);
+  }
+  // never let the camera dip below the water
+  camera.position.y = Math.max(camera.position.y, 1.5);
+
+  hudPhase.textContent = p.phase;
+  hudSpeed.textContent = p.speed.toFixed(0);
+  hudAlt.textContent = Math.max(0, p.alt).toFixed(0);
+}
+
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  if (!paused) step(dt);
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
